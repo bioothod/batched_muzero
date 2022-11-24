@@ -48,6 +48,7 @@ class Inference:
         self.num_actions = hparams.num_actions
         self.logger = logger
         self.default_reward = hparams.default_reward
+        self.hparams = hparams
 
     def initial(self, game_states: torch.Tensor) -> NetworkOutput:
         batch_size = game_states.shape[0]
@@ -85,7 +86,7 @@ class MinMaxStats:
 class HashKey:
     def __init__(self, full_path: torch.Tensor, episode_len: torch.Tensor):
         key = full_path[:episode_len]
-        self.key = key.detach().clone().byte().numpy()
+        self.key = key.detach().cpu().clone().byte().numpy()
         # this is fast
         self.key = self.key.tobytes()
         self.hash = hash(self.key)
@@ -120,17 +121,17 @@ class Tree:
         self.start_offset = 1
         max_size = self.start_offset + (1 + self.hparams.num_simulations) * self.hparams.num_actions
 
-        self.saved_children_index = torch.zeros([hparams.batch_size, max_size]).long()
-        self.visit_count = torch.zeros([hparams.batch_size, max_size]).long()
-        self.value_sum = torch.zeros([hparams.batch_size, max_size]).float()
-        self.prior = torch.zeros([hparams.batch_size, max_size]).float()
-        self.reward = torch.zeros([hparams.batch_size, max_size]).float()
-        self.expanded = torch.zeros([hparams.batch_size, max_size]).bool()
-        self.player_id = torch.zeros([hparams.batch_size, max_size]).long()
+        self.saved_children_index = torch.zeros([hparams.batch_size, max_size]).long().to(hparams.device)
+        self.visit_count = torch.zeros([hparams.batch_size, max_size]).long().to(hparams.device)
+        self.value_sum = torch.zeros([hparams.batch_size, max_size]).float().to(hparams.device)
+        self.prior = torch.zeros([hparams.batch_size, max_size]).float().to(hparams.device)
+        self.reward = torch.zeros([hparams.batch_size, max_size]).float().to(hparams.device)
+        self.expanded = torch.zeros([hparams.batch_size, max_size]).bool().to(hparams.device)
+        self.player_id = torch.zeros([hparams.batch_size, max_size]).long().to(hparams.device)
         self.hidden_states = {}
 
     def new_children_index(self, batch_index: torch.Tensor) -> torch.Tensor:
-        index = torch.arange(self.hparams.num_actions).unsqueeze(0)
+        index = torch.arange(self.hparams.num_actions).unsqueeze(0).to(self.hparams.device)
         index = index.tile([len(batch_index), 1])
 
         index += self.simulation_index * self.hparams.num_actions
@@ -141,7 +142,7 @@ class Tree:
         generation_index = self.saved_children_index[batch_index].gather(1, node_index.unsqueeze(1))
         generation_index = generation_index.tile([1, self.hparams.num_actions])
 
-        action_index = torch.arange(self.hparams.num_actions).unsqueeze(0)
+        action_index = torch.arange(self.hparams.num_actions).unsqueeze(0).to(self.hparams.device)
         action_index = action_index.tile([len(batch_index), 1])
 
         children_index = generation_index * self.hparams.num_actions
@@ -187,6 +188,7 @@ class Tree:
         concentration = torch.ones([len(batch_index), self.hparams.num_actions]).float() * self.hparams.dirichlet_alpha
         dist = torch.distributions.Dirichlet(concentration)
         noise = dist.sample()
+        noise = noise.to(self.hparams.device)
 
         priors = self.prior[batch_index].gather(1, node_index.unsqueeze(1))
         priors = priors * (1 - exploration_fraction) + noise * exploration_fraction
@@ -292,7 +294,7 @@ class Tree:
             #if False: self.logger.debug(f'load_states: hash: key: {key.key}, hash: {key.hash}')
             hidden_states.append(self.hidden_states[key])
 
-        hidden_states = torch.stack(hidden_states, 0)
+        hidden_states = torch.stack(hidden_states, 0).to(self.hparams.device)
         if False: self.logger.debug(f'load_states: search_path_len: {search_path.shape}, '
                          f'episode_len10: {episode_len[:10]}, '
                          f'hidden_states: {hidden_states.shape}, '
@@ -302,17 +304,17 @@ class Tree:
     def player_id_change(self, player_id: torch.Tensor):
         next_id = player_id + 1
         next_id = torch.where(next_id > self.hparams.player_ids[-1], self.hparams.player_ids[0], next_id)
-        return next_id
+        return next_id.to(self.hparams.device)
 
     def run_one(self):
-        search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long()
-        actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long()
-        episode_len = torch.ones(self.hparams.batch_size).long()
-        player_id = torch.ones(self.hparams.batch_size).long() * self.hparams.player_ids[0]
+        search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long().to(self.hparams.device)
+        actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
+        episode_len = torch.ones(self.hparams.batch_size).long().to(self.hparams.device)
+        player_id = torch.ones(self.hparams.batch_size).long().to(self.hparams.device) * self.hparams.player_ids[0]
         max_debug = 10
 
         batch_index = torch.arange(self.hparams.batch_size)
-        node_index = torch.zeros(self.hparams.batch_size).long()
+        node_index = torch.zeros(self.hparams.batch_size).long().to(self.hparams.device)
 
         if self.hparams.add_exploration_noise:
             self.add_exploration_noise(batch_index, node_index, self.hparams.exploration_fraction)
