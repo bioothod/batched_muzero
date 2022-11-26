@@ -13,19 +13,18 @@ class Hparams:
         self.default_reward = 0
 
 @torch.jit.script
-def check_reward(hparams: Hparams, games: torch.Tensor, player_id: int):
-    row_player = torch.ones(hparams.inarow) * player_id
+def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor):
+    row_player = torch.ones([len(games), hparams.inarow], device=games.device) * player_id
     columns_end = hparams.columns - (hparams.inarow - 1)
     rows_end = hparams.rows - (hparams.inarow - 1)
 
-    row_player = row_player.to(games.device)
     dones = torch.zeros(len(games), dtype=torch.bool, device=games.device)
     idx = torch.arange(len(games), device=games.device)
 
     for row in torch.arange(0, hparams.rows, dtype=torch.int64):
         for col in torch.arange(0, columns_end, dtype=torch.int64):
             window = games[idx][:, :, row, col:col+hparams.inarow]
-            win_idx = torch.all(window == row_player, -1)
+            win_idx = torch.all(window == row_player[idx], -1)
             win_idx = torch.any(win_idx, 1)
             dones[idx] = torch.logical_or(dones[idx], win_idx)
             idx = idx[torch.logical_not(win_idx)]
@@ -34,7 +33,7 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: int):
         for col in torch.arange(0, hparams.columns, dtype=torch.int64):
             for row in torch.arange(0, rows_end, dtype=torch.int64):
                 window = games[idx][:, :, row:row+hparams.inarow, col]
-                win_idx = torch.all(window == row_player, -1)
+                win_idx = torch.all(window == row_player[idx], -1)
                 win_idx = torch.any(win_idx, 1)
                 dones[idx] = torch.logical_or(dones[idx], win_idx)
                 idx = idx[torch.logical_not(win_idx)]
@@ -45,7 +44,7 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: int):
             for col in torch.arange(0, columns_end, dtype=torch.int64):
                 col_index = torch.arange(col, col+hparams.inarow)
                 window = games[idx][:, :, row_index, col_index]
-                win_idx = torch.all(window == row_player, -1)
+                win_idx = torch.all(window == row_player[idx], -1)
                 win_idx = torch.any(win_idx, 1)
                 dones[idx] = torch.logical_or(dones[idx], win_idx)
                 idx = idx[torch.logical_not(win_idx)]
@@ -56,7 +55,7 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: int):
             for col in torch.arange(0, columns_end, dtype=torch.int64):
                 col_index = torch.arange(col, col+hparams.inarow)
                 window = games[idx][:, :, row_index, col_index]
-                win_idx = torch.all(window == row_player, -1)
+                win_idx = torch.all(window == row_player[idx], -1)
                 win_idx = torch.any(win_idx, 1)
                 dones[idx] = torch.logical_or(dones[idx], win_idx)
                 idx = idx[torch.logical_not(win_idx)]
@@ -66,8 +65,8 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: int):
     return rewards, dones
 
 @torch.jit.script
-def step_games(hparams: Hparams, games: torch.Tensor, player_id: int, actions: torch.Tensor):
-    player_id = torch.tensor(player_id, dtype=torch.float32)
+def step_games(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor):
+    player_id = player_id.unsqueeze(1).float()
 
     num_games = len(games)
     non_zero = torch.count_nonzero(games[torch.arange(num_games, dtype=torch.int64), :, :, actions], 2).squeeze(1)
@@ -76,7 +75,7 @@ def step_games(hparams: Hparams, games: torch.Tensor, player_id: int, actions: t
     good_action_index_batch = non_zero < hparams.rows
 
     good_actions_index = actions[good_action_index_batch]
-    games[good_action_index_batch, :, hparams.rows - non_zero[good_action_index_batch] - 1, good_actions_index] = player_id
+    games[good_action_index_batch, :, hparams.rows - non_zero[good_action_index_batch] - 1, good_actions_index] = player_id[good_action_index_batch]
 
     rewards, dones = check_reward(hparams, games, player_id)
     rewards[invalid_action_index_batch] = torch.tensor(-10., dtype=torch.float32)
