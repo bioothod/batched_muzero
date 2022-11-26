@@ -97,6 +97,11 @@ class HashKey:
     def __eq__(self, other: 'HashKey') -> bool:
         return self.hash == other.hash and self.key == other.key
 
+def player_id_change(hparams: Hparams, player_id: torch.Tensor):
+    next_id = player_id + 1
+    next_id = torch.where(next_id > hparams.player_ids[-1], hparams.player_ids[0], next_id)
+    return next_id.to(hparams.device)
+
 class Tree:
     visit_count: torch.Tensor
     reward: torch.Tensor
@@ -165,7 +170,15 @@ class Tree:
 
 
         children_index = self.new_children_index(batch_index)
-        self.saved_children_index[batch_index] = self.saved_children_index[batch_index].scatter(1, node_index.unsqueeze(1), self.simulation_index)
+
+        if False:
+            updated_children_index = self.saved_children_index[batch_index].scatter(1, node_index.unsqueeze(1), self.simulation_index)
+            self.saved_children_index.scatter_(1, node_index.unsqueeze(1), self.simulation_index)
+            if torch.any(self.saved_children_index != updated_children_index):
+                self.logger.error(f'invalid saved_children_index update')
+                exit(-1)
+
+        self.saved_children_index.scatter_(1, node_index.unsqueeze(1), self.simulation_index)
 
         if False: self.logger.debug(f'expand: generation: {self.simulation_index}, node_index: {node_index[:max_debug]}, children_index:\n{children_index[:max_debug]}')
 
@@ -173,7 +186,14 @@ class Tree:
         self.player_id[batch_index, node_index] = player_id[batch_index]
 
         probs = torch.softmax(policy_logits, 1)
-        self.prior[batch_index] = self.prior[batch_index].scatter(1, children_index, probs)
+        if False:
+            prior_updated = self.prior[batch_index].scatter(1, children_index, probs)
+            self.prior.scatter_(1, children_index, probs)
+            if torch.any(self.prior != prior_updated):
+                self.logger.error(f'invalid prior update')
+                exit(-1)
+
+        self.prior.scatter_(1, children_index, probs)
         #if False: self.logger.debug(f'expand: priors:\n{self.prior[batch_index].gather(1, children_index)[:max_debug]}')
 
         self.simulation_index += 1
@@ -192,7 +212,7 @@ class Tree:
 
         priors = self.prior[batch_index].gather(1, node_index.unsqueeze(1))
         priors = priors * (1 - exploration_fraction) + noise * exploration_fraction
-        self.prior[batch_index] = self.prior[batch_index].scatter_add(1, node_index.unsqueeze(1), priors)
+        self.prior.scatter_add_(1, node_index.unsqueeze(1), priors)
 
     def select_children(self, batch_index: torch.Tensor, node_index: torch.Tensor) -> torch.Tensor:
         children_index = self.children_index(batch_index, node_index)
@@ -236,8 +256,8 @@ class Tree:
         return score
 
     def backpropagate(self, player_id: torch.Tensor, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
-        for current_episode_len in torch.arange(episode_len.max()-1, -1, step=-1):
-            batch_index = torch.arange(self.hparams.batch_size)[episode_len >= current_episode_len]
+        for current_episode_len in torch.arange(episode_len.max()-1, -1, step=-1).to(self.hparams.device):
+            batch_index = torch.arange(self.hparams.batch_size)[episode_len >= current_episode_len].to(self.hparams.device)
 
             node_index = search_path[batch_index, current_episode_len]
             node_multiplier = torch.where(self.player_id[batch_index, node_index] == player_id[batch_index], 1., -1.)
@@ -264,7 +284,7 @@ class Tree:
         pass
 
     def load_states1(self, search_path: torch.Tensor, episode_len: torch.Tensor) -> torch.Tensor:
-        hidden_states = torch.zeros([self.hparams.batch_size] + self.hparams.state_shape)
+        hidden_states = torch.zeros(self.hparams.batch_size, 16, *self.hparams.state_shape[1:]).to(self.hparams.device)
         return hidden_states
 
     def store_states(self, search_path: torch.Tensor, episode_len: torch.Tensor, hidden_states: torch.Tensor):
@@ -301,11 +321,6 @@ class Tree:
                          f'saved states: {len(self.hidden_states)}')
         return hidden_states
 
-    def player_id_change(self, player_id: torch.Tensor):
-        next_id = player_id + 1
-        next_id = torch.where(next_id > self.hparams.player_ids[-1], self.hparams.player_ids[0], next_id)
-        return next_id.to(self.hparams.device)
-
     def run_one(self):
         search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long().to(self.hparams.device)
         actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
@@ -313,7 +328,7 @@ class Tree:
         player_id = torch.ones(self.hparams.batch_size).long().to(self.hparams.device) * self.hparams.player_ids[0]
         max_debug = 10
 
-        batch_index = torch.arange(self.hparams.batch_size)
+        batch_index = torch.arange(self.hparams.batch_size).to(self.hparams.device)
         node_index = torch.zeros(self.hparams.batch_size).long().to(self.hparams.device)
 
         if self.hparams.add_exploration_noise:
@@ -347,7 +362,7 @@ class Tree:
                 break
 
             if depth_index >= 1:
-                player_id[batch_index] = self.player_id_change(player_id[batch_index])
+                player_id[batch_index] = player_id_change(self.hparams, player_id[batch_index])
 
 
         if False: self.logger.debug(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()]}')
@@ -360,7 +375,7 @@ class Tree:
         out = self.inference.recurrent(hidden_states, last_actions)
         self.store_states(search_path, episode_len, out.hidden_state)
 
-        batch_index = torch.arange(self.hparams.batch_size)
+        batch_index = torch.arange(self.hparams.batch_size).to(self.hparams.device)
         parent_index = search_path.gather(1, episode_len.unsqueeze(1)-1).squeeze(1)
         if False: self.logger.debug(f'parent_index: {parent_index[:max_debug]}')
         self.expand(player_id, batch_index, parent_index, out.policy_logits)
@@ -382,11 +397,11 @@ def main():
     tree = Tree(hparams, inference, logger)
     tree.player_id[:, 0] = player_id
 
-    batch_index = torch.arange(hparams.batch_size).long()
-    node_index = torch.zeros(hparams.batch_size).long()
+    batch_index = torch.arange(hparams.batch_size).long().to(hparams.device)
+    node_index = torch.zeros(hparams.batch_size).long().to(hparams.device)
 
-    episode_len = torch.ones(len(node_index)).long()
-    search_path = torch.zeros(len(node_index), 1).long()
+    episode_len = torch.ones(len(node_index)).long().to(hparams.device)
+    search_path = torch.zeros(len(node_index), 1).long().to(hparams.device)
     tree.store_states(search_path, episode_len, out.hidden_state)
 
     player_id = torch.ones_like(node_index) * player_id
@@ -394,8 +409,6 @@ def main():
 
     for _ in range(hparams.num_simulations):
         search_path, episode_len = tree.run_one()
-
-###    for _ in range(42):
 
 if __name__ == '__main__':
     main()
