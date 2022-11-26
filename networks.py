@@ -8,7 +8,7 @@ import torch.nn as nn
 class NetworkParams:
     observation_shape: List[int] = []
 
-    kernel_size: int = 4
+    kernel_size: int = 3
     hidden_size: int = 16
 
     repr_conv_res_num_features: int = 24
@@ -106,7 +106,7 @@ class Representation(nn.Module):
 
         self.conv_blocks = nn.Sequential(*res_blocks)
 
-        self.output_proj = nn.Sequential(
+        self.hidden_size_proj = nn.Sequential(
             nn.Conv2d(hparams.repr_conv_res_num_features,
                       hparams.hidden_size,
                       kernel_size=1,
@@ -118,7 +118,7 @@ class Representation(nn.Module):
     def forward(self, inputs):
         x = self.input_proj(inputs)
         x = self.conv_blocks(x)
-        x = self.output_proj(x)
+        x = self.hidden_size_proj(x)
         return x
 
 
@@ -175,15 +175,14 @@ class Prediction(nn.Module):
                 activation=hparams.activation)
             conv_blocks.append(block)
 
-        conv_blocks.append(
-            nn.Sequential(
-                nn.Conv2d(hparams.pred_conv_res_num_features,
-                          hparams.hidden_size,
-                          kernel_size=1,
-                          padding='same'),
-                nn.LayerNorm([hparams.hidden_size, *spatial_shape]),
-                nn.Tanh(),
-            ))
+        self.hidden_size_proj = nn.Sequential(
+            nn.Conv2d(hparams.pred_conv_res_num_features,
+                      hparams.hidden_size,
+                      kernel_size=1,
+                      padding='same'),
+            nn.LayerNorm([hparams.hidden_size, *spatial_shape]),
+            nn.Tanh(),
+        )
 
         self.conv_blocks = nn.Sequential(*conv_blocks)
 
@@ -201,6 +200,7 @@ class Prediction(nn.Module):
 
     def forward(self, inputs):
         x = self.conv_blocks(inputs)
+        x = self.hidden_size_proj(x)
 
         p = self.output_policy_logits(x)
         v = self.output_value(x).squeeze(1)
