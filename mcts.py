@@ -2,6 +2,7 @@ from typing import List, Dict, Optional
 
 import logging
 
+import numpy as np
 import torch
 
 from logger import setup_logger
@@ -86,9 +87,9 @@ class MinMaxStats:
 class HashKey:
     def __init__(self, full_path: torch.Tensor, episode_len: torch.Tensor):
         key = full_path[:episode_len]
-        self.key = key.detach().cpu().clone().byte().numpy()
+        #self.key = key.detach().cpu().clone().byte().numpy().tobytes()
         # this is fast
-        self.key = self.key.tobytes()
+        self.key = key.tostring()
         self.hash = hash(self.key)
 
     def __hash__(self) -> int:
@@ -280,10 +281,10 @@ class Tree:
             value[batch_index] = self.reward[batch_index, node_index] * node_multiplier + self.hparams.discount * value[batch_index]
             self.min_max_stats.update(value)
 
-    def store_states1(self, search_path: torch.Tensor, episode_len: torch.Tensor, hidden_states: torch.Tensor):
+    def _store_states(self, search_path: torch.Tensor, episode_len: torch.Tensor, hidden_states: torch.Tensor):
         pass
 
-    def load_states1(self, search_path: torch.Tensor, episode_len: torch.Tensor) -> torch.Tensor:
+    def _load_states(self, search_path: torch.Tensor, episode_len: torch.Tensor) -> torch.Tensor:
         hidden_states = torch.zeros(self.hparams.batch_size, 16, *self.hparams.state_shape[1:]).to(self.hparams.device)
         return hidden_states
 
@@ -293,13 +294,16 @@ class Tree:
                          f'hidden_states: {hidden_states.shape}, '
                          f'saved states: {len(self.hidden_states)}')
 
-        for path, elen, state in zip(search_path, episode_len, hidden_states):
+        search_path = search_path.detach().cpu().numpy().astype(np.uint8)
+        episode_len = episode_len.detach().cpu().numpy()
+        hidden_states = hidden_states.detach().clone()
+        for path, elen, hidden_state in zip(search_path, episode_len, hidden_states):
             key = HashKey(path, elen)
             if key in self.hidden_states:
                 continue
 
             #if False: self.logger.debug(f'store_states: hash: key: {key.key}, hash: {key.hash}')
-            self.hidden_states[key] = state.detach().clone()
+            self.hidden_states[key] = hidden_state
 
         if False: self.logger.debug(f'store_states: finish: search_path: {search_path.shape}, '
                          f'episode_len10: {episode_len[:10]}, '
@@ -309,6 +313,8 @@ class Tree:
     def load_states(self, search_path: torch.Tensor, episode_len: torch.Tensor) -> torch.Tensor:
         hidden_states = []
 
+        search_path = search_path.detach().cpu().numpy().astype(np.uint8)
+        episode_len = episode_len.detach().cpu().numpy()
         for path, elen in zip(search_path, episode_len):
             key = HashKey(path, elen)
             #if False: self.logger.debug(f'load_states: hash: key: {key.key}, hash: {key.hash}')
