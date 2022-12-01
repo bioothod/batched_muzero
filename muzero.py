@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, NamedTuple, Union
 
 import os
 import logging
@@ -25,6 +25,12 @@ class Hparams(mcts.Hparams):
 
     td_steps = 42
     num_unroll_steps = 5
+
+    init_lr = 1e-4
+    min_lr = 1e-5
+
+    train_batch_size = 4
+    training_games_window_size = 4
 
 def roll_by_gather(mat,dim, shifts: torch.LongTensor):
     # assumes 2D array
@@ -55,6 +61,16 @@ class Inference(mcts.Inference):
         self.representation = networks.Representation(net_hparams).to(hparams.device)
         self.prediction = networks.Prediction(net_hparams).to(hparams.device)
         self.dynamic = networks.Dynamic(net_hparams).to(hparams.device)
+
+        self.models = [self.representation, self.prediction, self.dynamic]
+
+    def train(self, mode: bool):
+        for model in self.models:
+            model.train(mode)
+
+    def zero_grad(self):
+        for model in self.models:
+            model.zero_grad()
 
     def create_states(self, player_id: torch.Tensor, game_states: torch.Tensor):
         batch_size = len(game_states)
@@ -95,6 +111,52 @@ class Inference(mcts.Inference):
             new_hidden_states, rewards = self.dynamic(inputs)
             #self.logger.info(f'inference: recurrent: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}, values: {values.shape}')
             return NetworkOutput(reward=rewards, hidden_state=new_hidden_states, policy_logits=policy_logits, value=values)
+
+class Sample:
+    num_steps: int
+    player_id: int
+    initial_game_state: torch.Tensor
+
+    child_visits: torch.Tensor
+    values: torch.Tensor
+    last_rewards: torch.Tensor
+
+    actions: torch.Tensor
+
+class SampleDataset:
+    def __init__(self, hparams: Hparams):
+        self.samples = []
+
+        self.num_unroll_steps = hparams.num_unroll_steps
+
+    def __len__(self):
+        return len(self.samples)
+
+    def append(self, sample_dict: Dict[str, torch.Tensor]):
+        game_states = sample_dict['game_states']
+        actions = sample_dict['actions']
+        episode_len = sample_dict['actions']
+        values = sample_dict['values']
+        last_rewards = sample_dict['last_rewards']
+        child_visits = sample_dict['child_visits']
+        player_ids = sample_dict['player_ids']
+
+        for sample_idx in range(len(game_states)):
+            s = Sample()
+
+            s.num_steps = episode_len[sample_idx]
+            s.player_id = player_ids[sample_idx]
+            s.initial_game_state = game_states[sample_idx]
+
+            s.child_visits = child_visits[sample_idx]
+            s.values = values[sample_idx]
+            s.last_rewards = last_rewards[sample_idx]
+            s.actions = actions[sample_idx]
+
+            self.samples.append(s)
+
+    def __getitem__(self, index):
+        s = self.samples[index]
 
 class GameStats:
     def __init__(self, hparams: Hparams, logger: logging.Logger):
@@ -146,27 +208,31 @@ class GameStats:
         target_last_rewards = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
         target_child_visits = torch.zeros(len(start_index), self.hparams.num_actions, self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
         taken_actions = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=self.hparams.device)
+        player_ids = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=self.hparams.device)
 
-        episode_len = self.episode_len - start_index
-        game_states = self.game_states[:, start_index]
+        sample_len = torch.zeros(len(start_index), dtype=torch.int64, device=self.hparams.device)
 
-        for unroll_index in range(self.hparams.num_unroll_steps + 1):
+        batch_index = torch.arange(len(start_index), dtype=torch.int64, device=self.root_values.device)
+        game_states = self.game_states[batch_index, start_index]
+
+        for unroll_index in range(0, self.hparams.num_unroll_steps+1):
             current_index = start_index + unroll_index
             bootstrap_index = current_index + self.hparams.td_steps
 
             bootstrap_update_index = bootstrap_index < self.episode_len
-            batch_index = torch.arange(len(self.root_values), dtype=torch.int64, device=self.root_values.device)
-            self.logger.info(f'{unroll_index}: '
+            valid_batch_index = batch_index[bootstrap_update_index]
+
+            if False:
+                self.logger.info(f'{unroll_index}: '
                              f'start_index: {start_index.cpu().numpy()}, '
                              f'current_index: {current_index.cpu().numpy()}, '
                              f'bootstrap_index: {bootstrap_index.cpu().numpy()}, '
                              f'bootstrap_update_index: {bootstrap_update_index.cpu().numpy()}/{bootstrap_update_index.shape}, '
-                             f'batch_index: {batch_index.cpu().numpy()}'
+                             f'valid_batch_index: {valid_batch_index.cpu().numpy()}'
                              )
-            batch_index = batch_index[bootstrap_update_index]
             values = torch.zeros(len(self.root_values), dtype=self.root_values.dtype, device=self.root_values.device)
             if bootstrap_update_index.sum() > 0:
-                values[bootstrap_update_index] = self.root_values[batch_index, bootstrap_index] * self.hparams.discount ** self.hparams.td_steps
+                values[bootstrap_update_index] = self.root_values[valid_batch_index, bootstrap_index] * self.hparams.discount ** self.hparams.td_steps
 
             discount_mult = torch.logspace(0, self.hparams.td_steps, self.rewards.shape[1], base=self.hparams.discount).to(self.hparams.device)
             discount_mult = discount_mult.unsqueeze(0)
@@ -190,9 +256,13 @@ class GameStats:
 
             current_valid_index = current_index[valid_index]
             target_values[valid_index, unroll_index] = values[valid_index]
-            target_last_rewards[valid_index, unroll_index] = self.rewards[valid_index, current_valid_index]
             target_child_visits[valid_index, :, unroll_index] = self.child_visits[valid_index, :, current_valid_index]
+
+            if unroll_index > 0:
+                target_last_rewards[valid_index, unroll_index] = self.rewards[valid_index, current_valid_index-1]
             taken_actions[valid_index, unroll_index] = self.actions[valid_index, current_valid_index]
+            player_ids[valid_index, unroll_index] = self.player_ids[valid_index, current_valid_index]
+            sample_len[valid_index] += 1
 
         return {
             'values': target_values,
@@ -200,7 +270,8 @@ class GameStats:
             'child_visits': target_child_visits,
             'game_states': game_states,
             'actions': taken_actions,
-            'episode_len': episode_len,
+            'sample_len': sample_len,
+            'player_ids': player_ids,
         }
 
 class Train:
@@ -237,7 +308,11 @@ class Train:
             search_path, episode_len = tree.run_one()
         simulation_time = perf_counter() - start_simulation_time
         one_sim_ms = int(simulation_time / self.hparams.num_simulations * 1000)
-        self.logger.info(f'train: batch_size: {batch_size}, num_simulations: {self.hparams.num_simulations}, time: {simulation_time:.3f} sec, avg: {one_sim_ms} ms')
+        self.logger.info(f'train: {self.num_train_steps:2d}: '
+                         f'batch_size: {batch_size}, '
+                         f'num_simulations: {self.hparams.num_simulations}, '
+                         f'time: {simulation_time:.3f} sec, '
+                         f'one_sim: {one_sim_ms:3d} ms')
 
         actions = self.select_actions(batch_size, tree)
 
@@ -300,14 +375,12 @@ def run_single_game(hparams: Hparams, train: Train):
 
     return train.game_stats
 
-def train_network(inference: Inference, player_ids: torch.Tensor, actions: torch.Tensor, target_dict: Dict[str, List[torch.Tensor]]):
-    pass
-
 def main():
     hparams = Hparams()
 
     hparams.batch_size = 2
     hparams.num_simulations = 64
+    hparams.training_games_window_size = 4
     hparams.device = torch.device('cuda:0')
 
     logfile = os.path.join(hparams.checkpoints_dir, 'muzero.log')
@@ -315,41 +388,79 @@ def main():
     logger = setup_logger('muzero', logfile, hparams.log_to_stdout)
 
     inference = Inference(hparams, logger)
+    representation_opt = torch.optim.Adam(inference.representation.parameters(), lr=hparams.init_lr)
+    prediction_opt = torch.optim.Adam(inference.prediction.parameters(), lr=hparams.init_lr)
+    dynamic_opt = torch.optim.Adam(inference.dynamic.parameters(), lr=hparams.init_lr)
+    optimizers = [representation_opt, prediction_opt, dynamic_opt]
 
-    all_games_window_size = 4
+    ce_loss = nn.CrossEntropyLoss()
+    scalar_loss = nn.MSELoss()
+
     all_games: List[GameStats] = []
     while True:
+        inference.train(False)
         train = Train(hparams, inference, logger)
         game_stats = run_single_game(hparams, train)
         all_games.append(game_stats)
 
-        if len(all_games) > all_games_window_size:
+        if len(all_games) > hparams.training_games_window_size:
             all_games.pop(0)
 
-        all_actions = []
-        all_player_ids = []
-        target_dict = defaultdict(list)
+        inference.train(True)
         for game_stat in all_games:
-            max_episode_len = game_stat.episode_len.max().item()
-            if max_episode_len <= hparams.num_unroll_steps:
-                start_pos = torch.zeros(hparams.batch_size, dtype=torch.int64, device=hparams.device)
-            else:
-                start_pos = torch.randint(0, max_episode_len, (hparams.batch_size,)).long().to(hparams.device)
+            max_episode_len = game_stat.episode_len.max().item() - hparams.num_unroll_steps
+            max_episode_len = max(0, max_episode_len)
 
-            target_sample = game_stat.make_target(start_pos)
-            for key, value in target_sample.items():
-                target_dict[key].append(value)
-
-            actions = game_stat.actions[:, start_pos]
-            all_actions.append(actions)
-            player_ids = game_stat.player_ids[:, start_pos]
-            all_player_ids.append(player_ids)
+            for _ in range(max_episode_len + 1):
+                if max_episode_len == 0:
+                    start_pos = torch.zeros(hparams.batch_size, dtype=torch.int64, device=hparams.device)
+                else:
+                    start_pos = torch.randint(0, max_episode_len, (hparams.batch_size,)).long().to(hparams.device)
 
 
-        all_actions = torch.cat(all_actions, 0)
-        all_player_ids = torch.cat(all_player_ids, 0)
-        train_network(inference, all_player_ids, all_actions, target_dict)
+                sample_dict = game_stat.make_target(start_pos)
 
+                game_states = sample_dict['game_states']
+                actions = sample_dict['actions']
+                sample_len = sample_dict['sample_len']
+                values = sample_dict['values']
+                last_rewards = sample_dict['last_rewards']
+                child_visits = sample_dict['child_visits']
+                player_ids = sample_dict['player_ids']
+
+                inference.zero_grad()
+                policy_loss = torch.zeros(1, requires_grad=True).float().to(game_states.device)
+                value_loss = torch.zeros(1, requires_grad=True).float().to(game_states.device)
+                reward_loss = torch.zeros(1, requires_grad=True).float().to(game_states.device)
+
+                logger.info(f'game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, child_visits: {child_visits.shape}')
+                out = inference.initial(player_ids[:, 0], game_states)
+                policy_loss += ce_loss(out.policy_logits, child_visits[:, :, 0])
+                value_loss += scalar_loss(out.value, values[:, 0])
+
+                batch_index = torch.arange(len(game_states), dtype=torch.int64, device=game_states.device)
+                for step_idx in range(1, sample_len.max()):
+                    valid_states_index = batch_index[step_idx < sample_len]
+
+                    active_hidden_states = out.hidden_state[valid_states_index]
+                    active_actions = actions[valid_states_index, step_idx-1]
+                    out = inference.recurrent(active_hidden_states, active_actions)
+
+                    active_last_rewards = last_rewards[valid_states_index, step_idx]
+
+                    active_values = values[valid_states_index, step_idx]
+                    active_child_visits = child_visits[valid_states_index, :, step_idx]
+
+                    policy_loss += ce_loss(out.policy_logits, active_child_visits)
+                    value_loss += scalar_loss(out.value, active_values)
+                    if step_idx > 0:
+                        reward_loss += scalar_loss(out.reward, active_last_rewards)
+
+                loss = policy_loss + value_loss + reward_loss
+                loss.backward()
+
+                for opt in optimizers:
+                    opt.step()
 
 if __name__ == '__main__':
     main()
