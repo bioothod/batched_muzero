@@ -90,27 +90,25 @@ class Inference(mcts.Inference):
         return states
 
     def initial(self, player_id: torch.Tensor, game_states: torch.Tensor) -> NetworkOutput:
-        with torch.no_grad():
-            batch_size = game_states.shape[0]
-            states = self.create_states(player_id, game_states)
-            hidden_states = self.representation(states)
-            policy_logits, values = self.prediction(hidden_states)
-            rewards = torch.zeros(batch_size).float().to(self.hparams.device)
-            #self.logger.info(f'inference: initial: game_states: {game_states.shape}: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}')
-            return NetworkOutput(reward=rewards, hidden_state=hidden_states, policy_logits=policy_logits, value=values)
+        batch_size = game_states.shape[0]
+        states = self.create_states(player_id, game_states)
+        hidden_states = self.representation(states)
+        policy_logits, values = self.prediction(hidden_states)
+        rewards = torch.zeros(batch_size).float().to(self.hparams.device)
+        #self.logger.info(f'inference: initial: game_states: {game_states.shape}: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}')
+        return NetworkOutput(reward=rewards, hidden_state=hidden_states, policy_logits=policy_logits, value=values)
 
     def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
-        with torch.no_grad():
-            policy_logits, values = self.prediction(hidden_states)
-            actions_exp = F.one_hot(actions, self.hparams.num_actions)
-            actions_exp = actions_exp.unsqueeze(1)
-            fill = hidden_states.shape[2]
-            actions_exp = actions_exp.tile([1, fill, 1])
-            actions_exp = actions_exp.unsqueeze(1)
-            inputs = torch.cat([hidden_states, actions_exp], 1)
-            new_hidden_states, rewards = self.dynamic(inputs)
-            #self.logger.info(f'inference: recurrent: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}, values: {values.shape}')
-            return NetworkOutput(reward=rewards, hidden_state=new_hidden_states, policy_logits=policy_logits, value=values)
+        policy_logits, values = self.prediction(hidden_states)
+        actions_exp = F.one_hot(actions, self.hparams.num_actions)
+        actions_exp = actions_exp.unsqueeze(1)
+        fill = hidden_states.shape[2]
+        actions_exp = actions_exp.tile([1, fill, 1])
+        actions_exp = actions_exp.unsqueeze(1)
+        inputs = torch.cat([hidden_states, actions_exp], 1)
+        new_hidden_states, rewards = self.dynamic(inputs)
+        #self.logger.info(f'inference: recurrent: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}, values: {values.shape}')
+        return NetworkOutput(reward=rewards, hidden_state=new_hidden_states, policy_logits=policy_logits, value=values)
 
 class Sample:
     num_steps: int
@@ -381,7 +379,7 @@ def main():
     hparams.batch_size = 2
     hparams.num_simulations = 64
     hparams.training_games_window_size = 4
-    hparams.device = torch.device('cuda:0')
+    hparams.device = torch.device('cpu')
 
     logfile = os.path.join(hparams.checkpoints_dir, 'muzero.log')
     os.makedirs(hparams.checkpoints_dir, exist_ok=True)
@@ -400,18 +398,18 @@ def main():
     while True:
         inference.train(False)
         train = Train(hparams, inference, logger)
-        game_stats = run_single_game(hparams, train)
+        with torch.no_grad():
+            game_stats = run_single_game(hparams, train)
         all_games.append(game_stats)
 
         if len(all_games) > hparams.training_games_window_size:
             all_games.pop(0)
 
-        inference.train(True)
         for game_stat in all_games:
             max_episode_len = game_stat.episode_len.max().item() - hparams.num_unroll_steps
             max_episode_len = max(0, max_episode_len)
 
-            for _ in range(max_episode_len + 1):
+            for sample_idx in range(max_episode_len + 1):
                 if max_episode_len == 0:
                     start_pos = torch.zeros(hparams.batch_size, dtype=torch.int64, device=hparams.device)
                 else:
@@ -429,34 +427,33 @@ def main():
                 player_ids = sample_dict['player_ids']
 
                 inference.zero_grad()
-                policy_loss = torch.zeros(1, requires_grad=True).float().to(game_states.device)
-                value_loss = torch.zeros(1, requires_grad=True).float().to(game_states.device)
-                reward_loss = torch.zeros(1, requires_grad=True).float().to(game_states.device)
+                for opt in optimizers:
+                    opt.zero_grad()
 
-                logger.info(f'game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, child_visits: {child_visits.shape}')
+
+                inference.train(True)
+
+                logger.info(f'{sample_idx:2d}: game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, child_visits: {child_visits.shape}')
                 out = inference.initial(player_ids[:, 0], game_states)
-                policy_loss += ce_loss(out.policy_logits, child_visits[:, :, 0])
-                value_loss += scalar_loss(out.value, values[:, 0])
+                loss = ce_loss(out.policy_logits, child_visits[:, :, 0])
+                loss += scalar_loss(out.value, values[:, 0])
 
-                batch_index = torch.arange(len(game_states), dtype=torch.int64, device=game_states.device)
                 for step_idx in range(1, sample_len.max()):
-                    valid_states_index = batch_index[step_idx < sample_len]
+                    batch_index = step_idx < sample_len
+                    sample_len = sample_len[batch_index]
+                    actions = actions[batch_index]
+                    values = values[batch_index]
+                    child_visits = child_visits[batch_index]
+                    last_rewards = last_rewards[batch_index]
 
-                    active_hidden_states = out.hidden_state[valid_states_index]
-                    active_actions = actions[valid_states_index, step_idx-1]
-                    out = inference.recurrent(active_hidden_states, active_actions)
+                    hidden_states = out.hidden_state[batch_index]
+                    out = inference.recurrent(hidden_states, actions[:, step_idx-1])
 
-                    active_last_rewards = last_rewards[valid_states_index, step_idx]
-
-                    active_values = values[valid_states_index, step_idx]
-                    active_child_visits = child_visits[valid_states_index, :, step_idx]
-
-                    policy_loss += ce_loss(out.policy_logits, active_child_visits)
-                    value_loss += scalar_loss(out.value, active_values)
+                    loss += ce_loss(out.policy_logits, child_visits[:, :, step_idx])
+                    loss += scalar_loss(out.value, values[:, step_idx])
                     if step_idx > 0:
-                        reward_loss += scalar_loss(out.reward, active_last_rewards)
+                        loss += scalar_loss(out.reward, last_rewards[:, step_idx])
 
-                loss = policy_loss + value_loss + reward_loss
                 loss.backward()
 
                 for opt in optimizers:
