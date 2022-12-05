@@ -1,4 +1,4 @@
-from typing import Callable, List, Dict
+from typing import Any, List, Dict
 
 import numpy as np
 import torch
@@ -46,7 +46,7 @@ class NetworkParams:
         self.load_args(kwargs)
         self.activation = lambda: getattr(nn, self.activation_str)(*self.activation_args, **self.activation_kwargs)
 
-    def load_args(self, args_dict: dict):
+    def load_args(self, args_dict: Dict[Any, Any]):
         for k, v in args_dict.items():
             if self.__getattribute__(k) is not None:
                 self.__setattr__(k, v)
