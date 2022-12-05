@@ -1,57 +1,24 @@
-from typing import List, Dict, Optional
+from typing import Dict
 
 import logging
 
 import numpy as np
 import torch
 
+from hparams import Hparams
+from inference import Inference, NetworkOutput
 from logger import setup_logger
 
-class Hparams:
-    batch_size: int = 1024
-    state_shape: List[int] = [1, 6, 7]
-    num_actions: int = 7
-    device: torch.device = torch.device('cpu')
-    dtype: torch.dtype = torch.float32
-
-    max_episode_len: int = 42
-    num_simulations: int = 1000
-
-    default_reward: float = 0.0
-
-    discount: float = 0.99
-    c1: float = 1.25
-    c2: float = 19652
-    add_exploration_noise: bool = True
-    dirichlet_alpha: float = 0.3
-    exploration_fraction: float = 0.25
-
-    player_ids: List[int] = [1, 2]
-
-class NetworkOutput:
-    reward: torch.Tensor
-    hidden_state: torch.Tensor
-    policy_logits: torch.Tensor
-    value: torch.Tensor
-
-    def __init__(self, reward: torch.Tensor, hidden_state: torch.Tensor, policy_logits: torch.Tensor, value: Optional[torch.Tensor] = None):
-        self.reward = reward
-        self.hidden_state = hidden_state
-        self.policy_logits = policy_logits
-
-        if value is not None:
-            self.value = value
-        else:
-            self.value = torch.zeros_like(reward)
-
-class Inference:
+class MCTSInference(Inference):
     def __init__(self, hparams: Hparams, logger: logging.Logger):
+        super().__init__()
+
         self.num_actions = hparams.num_actions
         self.logger = logger
         self.default_reward = hparams.default_reward
         self.hparams = hparams
 
-    def initial(self, game_states: torch.Tensor) -> NetworkOutput:
+    def initial(self, player_id: torch.Tensor, game_states: torch.Tensor) -> NetworkOutput:
         batch_size = game_states.shape[0]
         hidden_states = game_states.view(batch_size, -1)
         policy_logits = torch.randn([batch_size, self.num_actions])
@@ -113,10 +80,10 @@ class Tree:
     saved_children_index: torch.Tensor
     hidden_states: Dict[HashKey, torch.Tensor]
     hparams: Hparams
-    inference: Inference
+    inference: MCTSInference
     logger: logging.Logger
 
-    def __init__(self, hparams: Hparams, inference: Inference, logger: logging.Logger):
+    def __init__(self, hparams: Hparams, inference: MCTSInference, logger: logging.Logger):
         self.hparams = hparams
         self.inference = inference
         self.logger = logger
@@ -397,7 +364,7 @@ def main():
     game_states = torch.zeros([hparams.batch_size, 1, 6, 7]).float().cpu()
 
     logger = setup_logger('mcts', logfile='test.log', log_to_stdout=True)
-    inference = Inference(hparams, logger)
+    inference = MCTSInference(hparams, logger)
     out = inference.initial(game_states)
 
     tree = Tree(hparams, inference, logger)
