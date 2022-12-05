@@ -1,9 +1,8 @@
-from typing import Dict, List, NamedTuple, Union
+from typing import Dict, List
 
 import os
 import logging
 
-from collections import defaultdict
 from copy import deepcopy
 from time import perf_counter
 
@@ -13,12 +12,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import connectx_impl
+from evaluate_score import EvaluationDataset
+from hparams import Hparams as GenericHparams
+from inference import Inference as GenericInference
+from inference import NetworkOutput
 from logger import setup_logger
 import mcts
-from mcts import NetworkOutput
 import networks
 
-class Hparams(mcts.Hparams):
+class Hparams(GenericHparams):
     checkpoints_dir = 'checkpoints_1'
     log_to_stdout = True
     max_num_actions = 1024*16
@@ -50,7 +52,7 @@ def roll_by_gather(mat,dim, shifts: torch.LongTensor):
         #print(arange2)
         return torch.gather(mat, 1, arange2)
 
-class Inference(mcts.Inference):
+class Inference(GenericInference):
     def __init__(self, hparams: Hparams, logger: logging.Logger):
         self.logger = logger
         self.hparams = hparams
@@ -341,7 +343,7 @@ class Train:
         actions = torch.multinomial(dist, 1)
         return actions.squeeze(1)
 
-def run_single_game(hparams: Hparams, train: Train):
+def run_single_game(hparams: Hparams, train: Train, num_steps: int):
     game_hparams = connectx_impl.Hparams()
     game_states = torch.zeros(hparams.batch_size, *hparams.state_shape).float().to(hparams.device)
     player_ids = torch.ones(hparams.batch_size, device=hparams.device).long() * hparams.player_ids[0]
@@ -371,19 +373,40 @@ def run_single_game(hparams: Hparams, train: Train):
         player_ids = mcts.player_id_change(hparams, player_ids)
         active_games_index = active_games_index[dones != True]
 
+        num_steps -= 1
+        if num_steps == 0:
+            break
+
     return train.game_stats
+
+def run_evaluation(orig_hparams: Hparams, inference: Inference, logger: logging.Logger, ev: EvaluationDataset):
+    hparams = deepcopy(orig_hparams)
+    hparams.batch_size = len(ev.game_states)
+    train = Train(hparams, inference, logger)
+    with torch.no_grad():
+        game_states = torch.zeros(hparams.batch_size, *hparams.state_shape).float().to(hparams.device)
+        active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
+
+        active_game_states = game_states[active_games_index]
+        active_player_ids = ev.game_player_ids[active_games_index]
+        pred_actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
+
+    best_score, good_score = ev.evaluate(pred_actions, debug=True)
 
 def main():
     hparams = Hparams()
 
-    hparams.batch_size = 2
-    hparams.num_simulations = 64
+    hparams.batch_size = 1024
+    hparams.num_simulations = 800
     hparams.training_games_window_size = 4
-    hparams.device = torch.device('cpu')
+    hparams.device = torch.device('cuda:0')
 
     logfile = os.path.join(hparams.checkpoints_dir, 'muzero.log')
     os.makedirs(hparams.checkpoints_dir, exist_ok=True)
     logger = setup_logger('muzero', logfile, hparams.log_to_stdout)
+
+    refmoves_fn = 'refmoves1k_kaggle'
+    ev = EvaluationDataset(refmoves_fn, hparams, logger)
 
     inference = Inference(hparams, logger)
     representation_opt = torch.optim.Adam(inference.representation.parameters(), lr=hparams.init_lr)
@@ -399,7 +422,7 @@ def main():
         inference.train(False)
         train = Train(hparams, inference, logger)
         with torch.no_grad():
-            game_stats = run_single_game(hparams, train)
+            game_stats = run_single_game(hparams, train, num_steps=-1)
         all_games.append(game_stats)
 
         if len(all_games) > hparams.training_games_window_size:
@@ -433,7 +456,7 @@ def main():
 
                 inference.train(True)
 
-                logger.info(f'{sample_idx:2d}: game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, child_visits: {child_visits.shape}')
+                #logger.info(f'{sample_idx:2d}: game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, child_visits: {child_visits.shape}')
                 out = inference.initial(player_ids[:, 0], game_states)
                 loss = ce_loss(out.policy_logits, child_visits[:, :, 0])
                 loss += scalar_loss(out.value, values[:, 0])
@@ -458,6 +481,8 @@ def main():
 
                 for opt in optimizers:
                     opt.step()
+
+        run_evaluation(hparams, inference, logger, ev)
 
 if __name__ == '__main__':
     main()
