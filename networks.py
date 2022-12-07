@@ -3,6 +3,7 @@ from typing import Any, List, Dict
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class NetworkParams:
@@ -112,7 +113,7 @@ class Representation(nn.Module):
                       kernel_size=1,
                       padding='same'),
             nn.LayerNorm([hparams.hidden_size, *spatial_shape]),
-            nn.Tanh(),
+            hparams.activation(),
         )
 
     def forward(self, inputs):
@@ -181,7 +182,7 @@ class Prediction(nn.Module):
                       kernel_size=1,
                       padding='same'),
             nn.LayerNorm([hparams.hidden_size, *spatial_shape]),
-            nn.Tanh(),
+            hparams.activation(),
         )
 
         self.conv_blocks = nn.Sequential(*conv_blocks)
@@ -196,7 +197,7 @@ class Prediction(nn.Module):
                                              hparams.pred_hidden_linear_layers,
                                              1,
                                              hparams.activation,
-                                             output_activation=nn.Tanh)
+                                             output_activation=None)
 
     def forward(self, inputs):
         x = self.conv_blocks(inputs)
@@ -240,7 +241,7 @@ class Dynamic(nn.Module):
                       kernel_size=1,
                       padding='same'),
             nn.LayerNorm([hparams.hidden_size, *spatial_shape]),
-            nn.Tanh(),
+            hparams.activation(),
         ))
 
         self.conv_blocks = nn.Sequential(*conv_blocks)
@@ -250,7 +251,7 @@ class Dynamic(nn.Module):
                                               hparams.dyn_reward_linear_layers,
                                               1,
                                               hparams.activation,
-                                              output_activation=nn.Tanh)
+                                              output_activation=None)
 
     def forward(self, inputs):
         next_state = self.conv_blocks(inputs)
