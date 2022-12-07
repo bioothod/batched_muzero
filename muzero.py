@@ -120,7 +120,7 @@ class Sample:
     player_id: int
     initial_game_state: torch.Tensor
 
-    child_visits: torch.Tensor
+    children_visits: torch.Tensor
     values: torch.Tensor
     last_rewards: torch.Tensor
 
@@ -141,7 +141,7 @@ class SampleDataset:
         episode_len = sample_dict['actions']
         values = sample_dict['values']
         last_rewards = sample_dict['last_rewards']
-        child_visits = sample_dict['child_visits']
+        children_visits = sample_dict['children_visits']
         player_ids = sample_dict['player_ids']
 
         for sample_idx in range(len(game_states)):
@@ -151,7 +151,7 @@ class SampleDataset:
             s.player_id = player_ids[sample_idx]
             s.initial_game_state = game_states[sample_idx]
 
-            s.child_visits = child_visits[sample_idx]
+            s.children_visits = children_visits[sample_idx]
             s.values = values[sample_idx]
             s.last_rewards = last_rewards[sample_idx]
             s.actions = actions[sample_idx]
@@ -169,7 +169,7 @@ class GameStats:
         self.episode_len = torch.zeros(hparams.batch_size, dtype=torch.int64, device=hparams.device)
         self.rewards = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=hparams.dtype, device=hparams.device)
         self.root_values = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=hparams.dtype, device=hparams.device)
-        self.child_visits = torch.zeros(hparams.batch_size, hparams.num_actions, hparams.max_episode_len, dtype=hparams.dtype, device=hparams.device)
+        self.children_visits = torch.zeros(hparams.batch_size, hparams.num_actions, hparams.max_episode_len, dtype=hparams.dtype, device=hparams.device)
         self.actions = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
         self.player_ids = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
         self.dones = torch.zeros(hparams.batch_size, dtype=torch.bool, device=hparams.device)
@@ -178,7 +178,7 @@ class GameStats:
         self.stored_tensors = {
             'rewards': self.rewards,
             'root_values': self.root_values,
-            'child_visits': self.child_visits,
+            'children_visits': self.children_visits,
             'actions': self.actions,
             'player_ids': self.player_ids,
             'dones': self.dones,
@@ -197,7 +197,7 @@ class GameStats:
                 raise ValueError(msg)
 
             tensor = self.stored_tensors[key]
-            if key == 'child_visits':
+            if key == 'children_visits':
                 tensor[index, :, episode_len] = value.detach().clone()
             elif key == 'dones':
                 tensor[index] = value.detach().clone()
@@ -209,7 +209,7 @@ class GameStats:
     def make_target(self, start_index: torch.Tensor):
         target_values = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
         target_last_rewards = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
-        target_child_visits = torch.zeros(len(start_index), self.hparams.num_actions, self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
+        target_children_visits = torch.zeros(len(start_index), self.hparams.num_actions, self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
         taken_actions = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=self.hparams.device)
         player_ids = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=self.hparams.device)
 
@@ -260,7 +260,7 @@ class GameStats:
 
             current_valid_index = current_index[valid_index]
             target_values[valid_index, unroll_index] = values[valid_index]
-            target_child_visits[valid_index, :, unroll_index] = self.child_visits[valid_index, :, current_valid_index]
+            target_children_visits[valid_index, :, unroll_index] = self.children_visits[valid_index, :, current_valid_index]
 
             if unroll_index > 0:
                 target_last_rewards[valid_index, unroll_index] = self.rewards[valid_index, current_valid_index-1]
@@ -271,7 +271,7 @@ class GameStats:
         return {
             'values': target_values,
             'last_rewards': target_last_rewards,
-            'child_visits': target_child_visits,
+            'children_visits': target_children_visits,
             'game_states': game_states,
             'actions': taken_actions,
             'sample_len': sample_len,
@@ -288,10 +288,7 @@ class Train:
         self.game_stats = GameStats(hparams, self.logger)
 
     def run_simulations(self, initial_player_id: torch.Tensor, initial_game_states: torch.Tensor):
-        local_hparams = deepcopy(self.hparams)
-        local_hparams.batch_size = len(initial_game_states)
-        tree = mcts.Tree(local_hparams, self.inference, self.logger)
-        tree.player_id[:, 0] = initial_player_id
+        tree = mcts.Tree(self.hparams, initial_player_id, self.inference, self.logger)
 
         batch_size = len(initial_game_states)
         batch_index = torch.arange(batch_size).long()
@@ -321,6 +318,7 @@ class Train:
 
         actions = self.select_actions(batch_size, tree)
 
+        node_index = torch.zeros(batch_size).long().to(self.hparams.device)
         children_index = tree.children_index(batch_index, node_index)
         children_visit_counts = tree.visit_count[batch_index].gather(1, children_index)
         children_sum_visits = children_visit_counts.sum(1)
@@ -338,7 +336,7 @@ class Train:
         children_index = tree.children_index(batch_index, node_index)
         visit_counts = tree.visit_count[batch_index].gather(1, children_index)
 
-        if self.num_train_steps >= 30:
+        if self.num_train_steps >= 50:
             actions = torch.argmax(visit_counts, 1)
             return actions
 
@@ -363,10 +361,11 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int):
         game_states[active_games_index] = new_game_states
 
         train.game_stats.append(active_games_index, {
-            'child_visits': children_visits,
+            'children_visits': children_visits,
             'root_values': root_values,
             'game_states': active_game_states,
             'rewards': rewards,
+            'actions': actions,
             'dones': dones,
             'player_ids': active_player_ids,
         })
@@ -428,8 +427,10 @@ class Trainer:
 
         collection_time = perf_counter() - start_time
         self.summary_writer.add_scalar('collect/time', collection_time, self.global_step)
-        self.summary_writer.add_histogram('collect/child_visits', game_stats.child_visits[:, :, 0], self.global_step)
-        self.summary_writer.add_histogram('collect/actions', game_stats.actions[:, 0], self.global_step)
+        for i in range(4):
+            self.summary_writer.add_histogram(f'collect/children_visits{i}', game_stats.children_visits[:, :, i], self.global_step)
+            self.summary_writer.add_histogram(f'collect/actions{i}', game_stats.actions[:, i], self.global_step)
+
         self.summary_writer.add_scalar('collect/root_values', game_stats.root_values[:, 0].mean(), self.global_step)
         self.summary_writer.add_scalar('collect/rewards', game_stats.rewards.mean(), self.global_step)
         self.summary_writer.add_scalar('collect/train_steps', train.num_train_steps, self.global_step)
@@ -450,11 +451,9 @@ class Trainer:
 
         self.summary_writer.add_scalars('train/episode_len', {
             'mean': game_stat.episode_len.float().mean(),
+            'median': game_stat.episode_len.float().median(),
             'min': game_stat.episode_len.min(),
             'max': game_stat.episode_len.max(),
-            'start_mean': start_pos.float().mean(),
-            'start_min': start_pos.min(),
-            'start_max': start_pos.max(),
         }, self.global_step)
 
         sample_dict = game_stat.make_target(start_pos)
@@ -464,15 +463,15 @@ class Trainer:
         sample_len = sample_dict['sample_len']
         values = sample_dict['values']
         last_rewards = sample_dict['last_rewards']
-        child_visits = sample_dict['child_visits']
+        children_visits = sample_dict['children_visits']
         player_ids = sample_dict['player_ids']
 
 
         train_examples = len(game_states)
 
-        #logger.info(f'{sample_idx:2d}: game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, child_visits: {child_visits.shape}')
+        #logger.info(f'{sample_idx:2d}: game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, children_visits: {children_visits.shape}')
         out = self.inference.initial(player_ids[:, 0], game_states)
-        policy_loss = self.ce_loss(out.policy_logits, child_visits[:, :, 0])
+        policy_loss = self.ce_loss(out.policy_logits, children_visits[:, :, 0])
         value_loss = self.scalar_loss(out.value, values[:, 0])
         reward_loss = self.scalar_loss(out.reward, out.reward)
 
@@ -488,7 +487,7 @@ class Trainer:
 
         #policy_softmax = F.log_softmax(out.policy_logits, 1)
 
-        #logger.info(f'child_visits:\n{child_visits[:5, :, 0]}, policy_logits:\n{out.policy_logits[:5]}\npolicy_softmax:\n{policy_softmax[:5]}\npolicy_loss:\n{policy_loss[:5]}')
+        #self.logger.info(f'children_visits:\n{children_visits[:5, :, 0]}, policy_logits:\n{out.policy_logits[:5]}\npolicy_softmax:\n{policy_softmax[:5]}\npolicy_loss:\n{policy_loss[:5]}\nactions:\n{actions[:5, 0]}')
         #logger.info(f'values:\n{values[:5, 0]}\nout.value:\n{out.value[:5]}\nvalue_loss: {value_loss[:5]}')
 
         if False:
@@ -504,7 +503,7 @@ class Trainer:
             sample_len = sample_len[batch_index]
             actions = actions[batch_index]
             values = values[batch_index]
-            child_visits = child_visits[batch_index]
+            children_visits = children_visits[batch_index]
             last_rewards = last_rewards[batch_index]
 
             scale = torch.ones(len(last_rewards), device=self.hparams.device)*0.5
@@ -513,7 +512,7 @@ class Trainer:
 
             out = self.inference.recurrent(hidden_states, actions[:, step_idx-1])
 
-            policy_loss = self.ce_loss(out.policy_logits, child_visits[:, :, step_idx])
+            policy_loss = self.ce_loss(out.policy_logits, children_visits[:, :, step_idx])
             value_loss = self.scalar_loss(out.value, values[:, step_idx])
             reward_loss = self.scalar_loss(out.reward, last_rewards[:, step_idx])
 
@@ -622,10 +621,10 @@ def main():
     hparams = Hparams()
 
     epoch = 0
-    hparams.batch_size = 512
-    hparams.num_simulations = 64
+    hparams.batch_size = 1024
+    hparams.num_simulations = 100
     hparams.training_games_window_size = 4
-    hparams.num_training_steps = 20
+    hparams.num_training_steps = 100
     hparams.device = torch.device('cuda:0')
 
     logfile = os.path.join(hparams.checkpoints_dir, 'muzero.log')
