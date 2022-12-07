@@ -5,6 +5,8 @@ import logging
 import numpy as np
 import torch
 
+from copy import deepcopy
+
 from hparams import Hparams
 from inference import Inference, NetworkOutput
 from logger import setup_logger
@@ -83,24 +85,28 @@ class Tree:
     inference: Inference
     logger: logging.Logger
 
-    def __init__(self, hparams: Hparams, inference: Inference, logger: logging.Logger):
-        self.hparams = hparams
+    def __init__(self, hparams: Hparams, player_id: torch.Tensor, inference: Inference, logger: logging.Logger):
+        self.hparams = deepcopy(hparams)
+        self.hparams.batch_size = len(player_id)
+
         self.inference = inference
         self.logger = logger
 
         self.min_max_stats = MinMaxStats()
         self.simulation_index = 0
 
+
         self.start_offset = 1
         max_size = self.start_offset + (1 + self.hparams.num_simulations) * self.hparams.num_actions
 
-        self.saved_children_index = torch.zeros([hparams.batch_size, max_size]).long().to(hparams.device)
-        self.visit_count = torch.zeros([hparams.batch_size, max_size]).long().to(hparams.device)
-        self.value_sum = torch.zeros([hparams.batch_size, max_size]).float().to(hparams.device)
-        self.prior = torch.zeros([hparams.batch_size, max_size]).float().to(hparams.device)
-        self.reward = torch.zeros([hparams.batch_size, max_size]).float().to(hparams.device)
-        self.expanded = torch.zeros([hparams.batch_size, max_size]).bool().to(hparams.device)
-        self.player_id = torch.zeros([hparams.batch_size, max_size]).long().to(hparams.device)
+        self.saved_children_index = torch.zeros([self.hparams.batch_size, max_size]).long().to(hparams.device)
+        self.visit_count = torch.zeros([self.hparams.batch_size, max_size]).long().to(hparams.device)
+        self.value_sum = torch.zeros([self.hparams.batch_size, max_size]).float().to(hparams.device)
+        self.prior = torch.zeros([self.hparams.batch_size, max_size]).float().to(hparams.device)
+        self.reward = torch.zeros([self.hparams.batch_size, max_size]).float().to(hparams.device)
+        self.expanded = torch.zeros([self.hparams.batch_size, max_size]).bool().to(hparams.device)
+        self.player_id = torch.zeros([self.hparams.batch_size, max_size]).long().to(hparams.device)
+        self.player_id[:, 0] = player_id.detach().clone().to(self.hparams.device)
         self.hidden_states = {}
 
     def new_children_index(self, batch_index: torch.Tensor) -> torch.Tensor:
@@ -122,8 +128,9 @@ class Tree:
         children_index += action_index
         children_index += self.start_offset
 
-        max_debug = 10
-        self.logger.debug(f'children_index: batch_index: {batch_index[:max_debug]}, '
+        if False:
+            max_debug = 10
+            self.logger.debug(f'children_index: batch_index: {batch_index[:max_debug]}, '
                          f'simulation_index: {self.simulation_index}, '
                          f'generation_index: {generation_index[:max_debug, 0]}, '
                          f'node_index: {node_index[:max_debug]}, '
@@ -131,21 +138,14 @@ class Tree:
         return children_index
 
     def expand(self, player_id: torch.Tensor, batch_index: torch.Tensor, node_index: torch.Tensor, policy_logits: torch.Tensor):
-        max_debug = 10
-        self.logger.debug(f'expand: batch_index: {batch_index[:max_debug]}, '
+        if False:
+            max_debug = 10
+            self.logger.debug(f'expand: batch_index: {batch_index[:max_debug]}, '
                          f'node_index: {node_index[:max_debug]}, '
                          f'node_index: {node_index.shape}')
 
 
         children_index = self.new_children_index(batch_index)
-
-        if False:
-            updated_children_index = self.saved_children_index[batch_index].scatter(1, node_index.unsqueeze(1), self.simulation_index)
-            self.saved_children_index.scatter_(1, node_index.unsqueeze(1), self.simulation_index)
-            if torch.any(self.saved_children_index != updated_children_index):
-                self.logger.error(f'invalid saved_children_index update')
-                exit(-1)
-
         self.saved_children_index.scatter_(1, node_index.unsqueeze(1), self.simulation_index)
 
         if False: self.logger.debug(f'expand: generation: {self.simulation_index}, node_index: {node_index[:max_debug]}, children_index:\n{children_index[:max_debug]}')
@@ -154,13 +154,6 @@ class Tree:
         self.player_id[batch_index, node_index] = player_id[batch_index]
 
         probs = torch.softmax(policy_logits, 1)
-        if False:
-            prior_updated = self.prior[batch_index].scatter(1, children_index, probs)
-            self.prior.scatter_(1, children_index, probs)
-            if torch.any(self.prior != prior_updated):
-                self.logger.error(f'invalid prior update')
-                exit(-1)
-
         self.prior.scatter_(1, children_index, probs)
         #if False: self.logger.debug(f'expand: priors:\n{self.prior[batch_index].gather(1, children_index)[:max_debug]}')
 
