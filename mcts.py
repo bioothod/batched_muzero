@@ -80,10 +80,10 @@ class Tree:
     saved_children_index: torch.Tensor
     hidden_states: Dict[HashKey, torch.Tensor]
     hparams: Hparams
-    inference: MCTSInference
+    inference: Inference
     logger: logging.Logger
 
-    def __init__(self, hparams: Hparams, inference: MCTSInference, logger: logging.Logger):
+    def __init__(self, hparams: Hparams, inference: Inference, logger: logging.Logger):
         self.hparams = hparams
         self.inference = inference
         self.logger = logger
