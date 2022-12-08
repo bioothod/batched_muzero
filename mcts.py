@@ -138,20 +138,22 @@ class Tree:
         return children_index
 
     def expand(self, player_id: torch.Tensor, batch_index: torch.Tensor, node_index: torch.Tensor, policy_logits: torch.Tensor):
-        if False:
+        if len(batch_index) != len(self.saved_children_index):
             max_debug = 10
-            self.logger.debug(f'expand: batch_index: {batch_index[:max_debug]}, '
-                         f'node_index: {node_index[:max_debug]}, '
-                         f'node_index: {node_index.shape}')
+            self.logger.critical(f'expand: batch_index: {batch_index.shape}\n{batch_index[:max_debug]}\n'
+                              f'saved_children_index: {self.saved_children_index.shape}\n{self.saved_children_index[:max_debug]}\n'
+                              f'node_index: {node_index.shape}\n{node_index[:max_debug]}')
+            raise ValueError(f'invalid batch index')
 
+        node_index = node_index.unsqueeze(1)
 
         children_index = self.new_children_index(batch_index)
-        self.saved_children_index.scatter_(1, node_index.unsqueeze(1), self.simulation_index)
+        self.saved_children_index.scatter_(1, node_index, self.simulation_index)
 
         if False: self.logger.debug(f'expand: generation: {self.simulation_index}, node_index: {node_index[:max_debug]}, children_index:\n{children_index[:max_debug]}')
 
-        self.expanded[batch_index, node_index] = True
-        self.player_id[batch_index, node_index] = player_id[batch_index]
+        self.expanded.scatter_(1, node_index, True)
+        self.player_id.scatter_(1, node_index, player_id.unsqueeze(1))
 
         probs = torch.softmax(policy_logits, 1)
         self.prior.scatter_(1, children_index, probs)
@@ -194,7 +196,6 @@ class Tree:
     def ucb_scores(self, batch_index: torch.Tensor, parent_index: torch.Tensor, children_index: torch.Tensor) -> torch.Tensor:
         parent_visit_count = self.visit_count[batch_index, parent_index]
         children_visit_count = self.visit_count[batch_index].gather(1, children_index)
-        if False: self.logger.debug(f'ucb_scores: parent_visit_count: {parent_visit_count}, children_visit_count:\n {children_visit_count}')
         score = torch.log((parent_visit_count + self.hparams.c2 + 1) / self.hparams.c2) + self.hparams.c1
         score *= torch.sqrt(parent_visit_count)
 
@@ -203,17 +204,13 @@ class Tree:
 
         children_prior = self.prior[batch_index].gather(1, children_index)
         prior_score = score * children_prior
-        if False: self.logger.debug(f'ucb_scores: score:\n{score}')
-        if False: self.logger.debug(f'ucb_scores: prior_score:\n{prior_score}')
 
         children_value = self.value(batch_index, children_index)
         if len(self.hparams.player_ids) != 1:
             children_value *= -1
-        if False: self.logger.debug(f'ucb_scores: children_value:\n{children_value}')
 
         value_score = self.reward[batch_index].gather(1, children_index) + self.hparams.discount * children_value
         score = prior_score + value_score
-        #if False: self.logger.debug(f'ucb_scores: prior_score: {prior_score.shape}, value_score: {value_score.shape}')
         return score
 
     def backpropagate(self, player_id: torch.Tensor, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
@@ -249,11 +246,6 @@ class Tree:
         return hidden_states
 
     def store_states(self, search_path: torch.Tensor, episode_len: torch.Tensor, hidden_states: torch.Tensor):
-        if False: self.logger.debug(f'store_states: start: search_path: {search_path.shape}, '
-                         f'episode_len10: {episode_len[:10]}, '
-                         f'hidden_states: {hidden_states.shape}, '
-                         f'saved states: {len(self.hidden_states)}')
-
         search_path = search_path.detach().cpu().numpy().astype(np.uint8)
         episode_len = episode_len.detach().cpu().numpy()
         hidden_states = hidden_states.detach().clone()
@@ -262,13 +254,7 @@ class Tree:
             if key in self.hidden_states:
                 continue
 
-            #if False: self.logger.debug(f'store_states: hash: key: {key.key}, hash: {key.hash}')
             self.hidden_states[key] = hidden_state
-
-        if False: self.logger.debug(f'store_states: finish: search_path: {search_path.shape}, '
-                         f'episode_len10: {episode_len[:10]}, '
-                         f'hidden_states: {hidden_states.shape}, '
-                         f'saved states: {len(self.hidden_states)}')
 
     def load_states(self, search_path: torch.Tensor, episode_len: torch.Tensor) -> torch.Tensor:
         hidden_states = []
@@ -277,14 +263,9 @@ class Tree:
         episode_len = episode_len.detach().cpu().numpy()
         for path, elen in zip(search_path, episode_len):
             key = HashKey(path, elen)
-            #if False: self.logger.debug(f'load_states: hash: key: {key.key}, hash: {key.hash}')
             hidden_states.append(self.hidden_states[key])
 
         hidden_states = torch.stack(hidden_states, 0).to(self.hparams.device)
-        if False: self.logger.debug(f'load_states: search_path_len: {search_path.shape}, '
-                         f'episode_len10: {episode_len[:10]}, '
-                         f'hidden_states: {hidden_states.shape}, '
-                         f'saved states: {len(self.hidden_states)}')
         return hidden_states
 
     def run_one(self):
