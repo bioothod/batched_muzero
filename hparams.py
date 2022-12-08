@@ -22,6 +22,6 @@ class Hparams:
     c2: float = 19652
     add_exploration_noise: bool = True
     dirichlet_alpha: float = 0.3
-    exploration_fraction: float = 0.4
+    exploration_fraction: float = 0.25
 
     player_ids: List[int] = [1, 2]
