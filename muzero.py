@@ -466,10 +466,14 @@ class Trainer:
         children_visits = sample_dict['children_visits']
         player_ids = sample_dict['player_ids']
 
+        invalid_sample_len_index = sample_len == 0
+        if invalid_sample_len_index.sum() > 0:
+            self.logger.error(f'{epoch}: invalid sample_len: number of zeros: {invalid_sample_len_index.sum()}, sample_len:\n{sample_len}\nstart_pos:{start_pos}')
+            self.logger.info(f'game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, children_visits: {children_visits.shape}')
+            exit(-1)
 
         train_examples = len(game_states)
 
-        #logger.info(f'{sample_idx:2d}: game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, children_visits: {children_visits.shape}')
         out = self.inference.initial(player_ids[:, 0], game_states)
         policy_loss = self.ce_loss(out.policy_logits, children_visits[:, :, 0])
         value_loss = self.scalar_loss(out.value, values[:, 0])
@@ -600,7 +604,7 @@ class Trainer:
             'dynamic_optimizer_state_dict': self.dynamic_opt.state_dict(),
             'global_step': self.global_step,
             'max_best_score': self.max_best_score,
-            }, checkpoint_path)
+        }, checkpoint_path)
 
     def load(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
@@ -621,10 +625,10 @@ def main():
     hparams = Hparams()
 
     epoch = 0
-    hparams.batch_size = 1024
-    hparams.num_simulations = 100
-    hparams.training_games_window_size = 4
-    hparams.num_training_steps = 100
+    hparams.batch_size = 128
+    hparams.num_simulations = 800
+    hparams.training_games_window_size = 3
+    hparams.num_training_steps = 30
     hparams.device = torch.device('cuda:0')
 
     logfile = os.path.join(hparams.checkpoints_dir, 'muzero.log')
