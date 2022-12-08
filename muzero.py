@@ -533,32 +533,22 @@ class Trainer:
         for opt in self.optimizers:
             opt.zero_grad()
 
-        total_loss = 0
-        total_train_examples = 0
-        for game_stat in self.all_games:
-            loss, train_examples = self.training_forward_one_game(epoch, game_stat)
-            total_loss += loss
-            total_train_examples += train_examples
+        game_stat = np.random.choice(self.all_games)
+        total_loss, total_train_examples = self.training_forward_one_game(epoch, game_stat)
 
         total_loss.backward()
 
         for opt in self.optimizers:
             opt.step()
 
-        self.summary_writer.add_scalar('train/total_loss', total_loss / len(self.all_games), self.global_step)
-        self.summary_writer.add_scalar('train/samples', total_train_examples / len(self.all_games), self.global_step)
-        return total_loss.item(), total_train_examples
+        self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
+        self.summary_writer.add_scalar('train/samples', total_train_examples, self.global_step)
 
     def run_training(self, epoch: int):
         self.summary_writer.add_scalar('train/epoch', epoch, self.global_step)
 
-        all_losses = []
-        all_train_examples = 0
         for train_idx in range(self.hparams.num_training_steps):
-            total_loss, total_train_examples = self.training_step(epoch)
-
-            all_losses.append(total_loss)
-            all_train_examples += total_train_examples
+            self.training_step(epoch)
 
             if train_idx % 10 == 0:
                 best_score, good_score = self.run_evaluation(save_if_best=True)
