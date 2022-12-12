@@ -1,7 +1,8 @@
 from typing import Dict, List
 
-import os
 import logging
+import pickle
+import os
 
 from copy import deepcopy
 from time import perf_counter
@@ -21,6 +22,7 @@ from inference import Inference as GenericInference
 from inference import NetworkOutput
 from logger import setup_logger
 import mcts
+import muzero_server
 import networks
 
 class Hparams(GenericHparams):
@@ -394,6 +396,8 @@ class Trainer:
 
         self.max_best_score = None
 
+        self.grpc_server, self.muzero_server = muzero_server.start_server(hparams, logger)
+
         tensorboard_log_dir = os.path.join(hparams.checkpoints_dir, 'tensorboard_logs')
         first_run = True
         if os.path.exists(tensorboard_log_dir) and len(os.listdir(tensorboard_log_dir)) > 0:
@@ -412,6 +416,9 @@ class Trainer:
         self.scalar_loss = nn.MSELoss(reduction='none')
 
         self.all_games: List[GameStats] = []
+
+    def close(self):
+        self.grpc_server.wait_for_termination()
 
     def collect_games_episode(self):
         start_time = perf_counter()
@@ -544,6 +551,18 @@ class Trainer:
         self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
         self.summary_writer.add_scalar('train/samples', total_train_examples, self.global_step)
 
+
+        self.global_step += 1
+
+        save_dict = {
+            'representation_state_dict': self.inference.representation.state_dict(),
+            'prediction_state_dict': self.inference.prediction.state_dict(),
+            'dynamic_state_dict': self.inference.dynamic.state_dict(),
+        }
+        meta = pickle.dumps(save_dict)
+
+        self.muzero_server.update_weights(self.global_step, meta)
+
     def run_training(self, epoch: int):
         self.summary_writer.add_scalar('train/epoch', epoch, self.global_step)
 
@@ -552,8 +571,6 @@ class Trainer:
 
             if train_idx % 10 == 0:
                 best_score, good_score = self.run_evaluation(save_if_best=True)
-
-            self.global_step += 1
 
         best_score, good_score = self.run_evaluation(save_if_best=True)
 

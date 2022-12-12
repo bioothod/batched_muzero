@@ -25,3 +25,6 @@ class Hparams:
     exploration_fraction: float = 0.25
 
     player_ids: List[int] = [1, 2]
+
+    server_port = 50051
+    num_server_workers = 2

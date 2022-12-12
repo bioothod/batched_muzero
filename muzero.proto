@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+message WeightRequest {
+  int64 generation = 1;
+}
+
+message WeightResponse {
+  int64 generation = 1;
+  bytes weights = 2;
+}
+
+message GameStats {
+  int64 generation = 1;
+  bytes stats = 2;
+}
+
+message Status {
+  int64 generation = 1;
+  int32 status = 2;
+  string message = 3;
+}
+
+service Muzero {
+  rpc WeightUpdateRequest(WeightRequest) returns (WeightResponse) {}
+  rpc SendGameStats(GameStats) returns (Status) {}
+}
