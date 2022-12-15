@@ -34,7 +34,7 @@ class MuzeroServer(muzero_pb2_grpc.MuzeroServicer):
         return all_games
 
     def WeightUpdateRequest(self, request, context) -> muzero_pb2.WeightResponse:
-        self.logger.info(f'server: weights update request: generation: r{request.generation}, s{self.generation}')
+        self.logger.debug(f'server: weights update request: generation: r{request.generation}, s{self.generation}')
 
         if request.generation >= self.generation:
             return muzero_pb2.WeightResponse(
@@ -50,7 +50,7 @@ class MuzeroServer(muzero_pb2_grpc.MuzeroServicer):
         games = pickle.loads(request.stats)
         self.all_games[request.generation] += games
 
-        self.logger.info(f'server: game stats update: '
+        self.logger.debug(f'server: game stats update: '
                          f'generation: r{request.generation}, s{self.generation}, '
                          f'recv_games: {len(games)}, '
                          f'all_games_for_gen{request.generation}: {len(self.all_games[request.generation])}')
