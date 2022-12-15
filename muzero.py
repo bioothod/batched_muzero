@@ -291,8 +291,6 @@ class Trainer:
             if train_idx % 10 == 0:
                 best_score, good_score = self.run_evaluation(save_if_best=True)
 
-            self.move_games()
-
         best_score, good_score = self.run_evaluation(save_if_best=True)
 
     def run_evaluation(self, save_if_best: bool):
