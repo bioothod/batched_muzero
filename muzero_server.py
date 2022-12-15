@@ -1,14 +1,18 @@
+from collections import defaultdict
 from concurrent import futures
-import logging
+from typing import List, Dict
 
 import grpc
-
-from hparams import Hparams
+import logging
+import pickle
 
 import muzero_pb2
 import muzero_pb2_grpc
 
-class MuzeroServer(muzero_pb2_grpc.Muzero):
+from hparams import Hparams
+from simulation import GameStats
+
+class MuzeroServer(muzero_pb2_grpc.MuzeroServicer):
     generation: int
 
     def __init__(self, hparams: Hparams, logger: logging.Logger):
@@ -18,21 +22,39 @@ class MuzeroServer(muzero_pb2_grpc.Muzero):
         self.generation = 0
         self.latest_serialized_weights = None
 
-    def update_weights(self, generation: int, weights: bytes):
-        self.logger.info(f'server: weights updated: generation: {self.generation} -> {generation}, weights: {len(weights)} bytes')
+        self.all_games = defaultdict(list)
 
+    def update_weights(self, generation: int, weights: bytes):
         self.generation = generation
         self.latest_serialized_weights = weights
 
+    def move_games(self) -> Dict[int, List[GameStats]]:
+        all_games = self.all_games
+        self.all_games = defaultdict(list)
+        return all_games
+
     def WeightUpdateRequest(self, request, context) -> muzero_pb2.WeightResponse:
-        self.logger.info(f'server: weights update request: generation: {request.generation} -> {self.generation}')
+        self.logger.info(f'server: weights update request: generation: r{request.generation}, s{self.generation}')
+
+        if request.generation >= self.generation:
+            return muzero_pb2.WeightResponse(
+                generation=self.generation,
+            )
+
         return muzero_pb2.WeightResponse(
             generation=self.generation,
             weights=self.latest_serialized_weights,
         )
 
     def SendGameStats(self, request, context) -> muzero_pb2.Status:
-        self.logger.info(f'server: game stats update: generation: {request.generation} -> {self.generation}')
+        games = pickle.loads(request.stats)
+        self.all_games[request.generation] += games
+
+        self.logger.info(f'server: game stats update: '
+                         f'generation: r{request.generation}, s{self.generation}, '
+                         f'recv_games: {len(games)}, '
+                         f'all_games_for_gen{request.generation}: {len(self.all_games[request.generation])}')
+
         return muzero_pb2.Status(
             generation=self.generation,
             status=0,
