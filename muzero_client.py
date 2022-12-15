@@ -1,4 +1,5 @@
 import grpc
+import io
 import logging
 import os
 import pickle
@@ -17,6 +18,28 @@ from hparams import Hparams
 from logger import setup_logger
 from networks import Inference
 import simulation
+
+def fix(map_loc):
+    # Closure rather than a lambda to preserve map_loc
+    return lambda b: torch.load(io.BytesIO(b), map_location=map_loc)
+
+class MappedUnpickler(pickle.Unpickler):
+    # https://github.com/pytorch/pytorch/issues/16797#issuecomment-633423219
+
+    def __init__(self, *args, map_location='cpu', **kwargs):
+        self._map_location = map_location
+        super().__init__(*args, **kwargs)
+
+    def find_class(self, module, name):
+        if module == 'torch.storage' and name == '_load_from_bytes':
+            return fix(self._map_location)
+        else:
+            return super().find_class(module, name)
+
+def mapped_loads(s, map_location='cpu'):
+    bs = io.BytesIO(s)
+    unpickler = MappedUnpickler(bs, map_location=map_location)
+    return unpickler.load()
 
 class MuzeroCollectionClient:
     def __init__(self, client_id: str, hparams: Hparams, logger: logging.Logger):
@@ -52,11 +75,7 @@ class MuzeroCollectionClient:
             self.summary_writer.add_scalar(f'collect/{self.client_id}/generation', self.generation, self.global_step)
 
     def load_weights(self, weights):
-        checkpoint = pickle.loads(weights)
-
-        device = self.hparams.device
-        if isinstance(device, str):
-            device = torch.device(device)
+        checkpoint = mapped_loads(weights, map_location=self.hparams.device)
 
         self.inference.representation.load_state_dict(checkpoint['representation_state_dict'], map_location=device)
         self.inference.prediction.load_state_dict(checkpoint['prediction_state_dict'], map_location=device)
