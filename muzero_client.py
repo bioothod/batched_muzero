@@ -50,9 +50,13 @@ class MuzeroCollectionClient:
     def load_weights(self, weights):
         checkpoint = pickle.loads(weights)
 
-        self.inference.representation.load_state_dict(checkpoint['representation_state_dict'])
-        self.inference.prediction.load_state_dict(checkpoint['prediction_state_dict'])
-        self.inference.dynamic.load_state_dict(checkpoint['dynamic_state_dict'])
+        device = self.hparams.device
+        if isinstance(device, str):
+            device = torch.device(device)
+
+        self.inference.representation.load_state_dict(checkpoint['representation_state_dict'], map_location=device)
+        self.inference.prediction.load_state_dict(checkpoint['prediction_state_dict'], map_location=device)
+        self.inference.dynamic.load_state_dict(checkpoint['dynamic_state_dict'], map_location=device)
 
     def send_game_stats(self, game_stats: simulation.GameStats):
         game_stats = [game_stats]
