@@ -94,7 +94,6 @@ class MuzeroCollectionClient:
 
 
 def run_process(client_id: str, hparams: Hparams):
-    client_id = 'client0'
     logfile = os.path.join(hparams.checkpoints_dir, f'{client_id}.log')
     logger = setup_logger(client_id, logfile, True)
 
@@ -115,7 +114,8 @@ def main():
 
     processes = []
     for cid in range(2):
-        p = mp.Process(target=run_process, args=(cid, hparams))
+        client_id = f'client{cid}'
+        p = mp.Process(target=run_process, args=(client_id, hparams))
         p.start()
         processes.append(p)
 
