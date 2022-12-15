@@ -62,7 +62,14 @@ class MuzeroServer(muzero_pb2_grpc.MuzeroServicer):
         )
 
 def start_server(hparams: Hparams, logger: logging.Logger):
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=hparams.num_server_workers))
+    options = (
+        ('grpc.max_send_message_length', -1),
+        ('grpc.max_receive_message_length', -1),
+    )
+    server = grpc.server(
+        thread_pool=futures.ThreadPoolExecutor(max_workers=hparams.num_server_workers),
+        options=options,
+    )
     muzero_server = MuzeroServer(hparams, logger)
     muzero_pb2_grpc.add_MuzeroServicer_to_server(muzero_server, server)
     server.add_insecure_port(f'[::]:{hparams.server_port}')

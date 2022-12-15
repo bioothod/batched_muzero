@@ -24,7 +24,11 @@ class MuzeroCollectionClient:
         self.hparams = hparams
         self.client_id = client_id
 
-        self.channel = grpc.insecure_channel(f'localhost:{hparams.server_port}')
+        options = (
+            ('grpc.max_send_message_length', -1),
+            ('grpc.max_receive_message_length', -1),
+        )
+        self.channel = grpc.insecure_channel(target=f'localhost:{hparams.server_port}', options=options)
         self.stub = muzero_pb2_grpc.MuzeroStub(self.channel)
 
         self.generation = -1
