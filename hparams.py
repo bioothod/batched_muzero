@@ -20,7 +20,7 @@ class Hparams:
 
     default_reward: float = 0.0
 
-    discount: float = 0.99
+    discount: float = 1.0
     c1: float = 1.25
     c2: float = 19652
     add_exploration_noise: bool = True
@@ -32,7 +32,7 @@ class Hparams:
     num_unroll_steps: int = 5
     td_steps: int = 42
 
-    max_training_games = 8
+    max_training_games = 24
 
     server_port = 50051
     num_server_workers = 2

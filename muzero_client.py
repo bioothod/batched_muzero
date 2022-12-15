@@ -106,8 +106,8 @@ def run_process(client_id: str, hparams: Hparams):
 
 def main():
     hparams = Hparams()
-    hparams.batch_size = 256
-    hparams.num_simulations = 64
+    hparams.batch_size = 512
+    hparams.num_simulations = 800
     hparams.device = 'cuda:0'
 
     mp.set_start_method('spawn')
