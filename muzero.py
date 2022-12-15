@@ -263,7 +263,8 @@ class Trainer:
                     break
 
         if num_games > 0:
-            self.logger.info(f'number of games: {num_games}')
+            self.summary_writer.add_scalar('train/num_games', num_games, self.global_step)
+
 
     def save_muzero_server_weights(self):
         save_dict = {
@@ -289,6 +290,8 @@ class Trainer:
 
             if train_idx % 10 == 0:
                 best_score, good_score = self.run_evaluation(save_if_best=True)
+
+            self.move_games()
 
         best_score, good_score = self.run_evaluation(save_if_best=True)
 
