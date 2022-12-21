@@ -78,7 +78,7 @@ class GameStats:
 
         sample_len = torch.zeros(len(start_index), dtype=torch.int64, device=self.hparams.device)
 
-        batch_index = torch.arange(len(start_index), dtype=torch.int64, device=self.root_values.device)
+        batch_index = torch.arange(len(start_index), dtype=torch.int64, device=self.hparams.device)
         game_states = self.game_states[batch_index, start_index]
 
         for unroll_index in range(0, self.hparams.num_unroll_steps+1):
