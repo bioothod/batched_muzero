@@ -113,6 +113,7 @@ class Trainer:
 
         self.all_games: Dict[int, List[simulation.GameStats]] = defaultdict(list)
 
+        self.try_load()
         self.save_muzero_server_weights()
 
     def close(self):
@@ -348,6 +349,23 @@ class Trainer:
         self.save_muzero_server_weights()
 
         self.logger.info(f'loaded checkpoint {checkpoint_path}')
+
+    def try_load(self):
+        max_score = None
+        max_score_fn = None
+        for fn in os.listdir(self.hparams.checkpoints_dir):
+            if not fn.endswith('.ckpt'):
+                continue
+
+            score = float(fn.split('.')[0][7:])
+            if max_score is None or score > max_score:
+                max_score = score
+                max_score_fn = fn
+
+        if max_score_fn is not None:
+            checkpoint_path = os.path.join(self.hparams.checkpoints_dir, max_score_fn)
+            self.load(checkpoint_path)
+
 
 def main():
     hparams = Hparams()
