@@ -237,7 +237,7 @@ class Trainer:
         self.save_muzero_server_weights()
         self.move_games()
 
-    def move_games(self):
+    def move_games(self) -> int:
         new_games = self.muzero_server.move_games()
         if len(new_games) > 0:
             for gen, games in new_games.items():
@@ -266,6 +266,7 @@ class Trainer:
         if num_games > 0:
             self.summary_writer.add_scalar('train/num_games', num_games, self.global_step)
 
+        return num_games
 
     def save_muzero_server_weights(self):
         save_dict = {
@@ -280,11 +281,8 @@ class Trainer:
     def run_training(self, epoch: int):
         self.summary_writer.add_scalar('train/epoch', epoch, self.global_step)
 
-        self.move_games()
-
-        while len(self.all_games) == 0:
+        while self.move_games() == 0:
             time.sleep(1)
-            self.move_games()
 
         for train_idx in range(self.hparams.num_training_steps):
             self.training_step(epoch)
