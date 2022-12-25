@@ -64,6 +64,9 @@ class HashKey:
     def __hash__(self) -> int:
         return self.hash
 
+    def __repr__(self):
+        return f'{self.key}/{self.hash}'
+
     def __eq__(self, other: 'HashKey') -> bool:
         return self.hash == other.hash and self.key == other.key
 
@@ -128,21 +131,20 @@ class Tree:
         children_index += action_index
         children_index += self.start_offset
 
-        if False:
-            max_debug = 10
-            self.logger.debug(f'children_index: batch_index: {batch_index[:max_debug]}, '
-                         f'simulation_index: {self.simulation_index}, '
-                         f'generation_index: {generation_index[:max_debug, 0]}, '
-                         f'node_index: {node_index[:max_debug]}, '
-                         f'children_index:\n{children_index[:max_debug]}')
+        # max_debug = 10
+        # self.logger.debug(f'children_index: batch_index: {batch_index[:max_debug]}, '
+        #              f'simulation_index: {self.simulation_index}, '
+        #              f'generation_index: {generation_index[:max_debug, 0]}, '
+        #              f'node_index: {node_index[:max_debug]}, '
+        #              f'children_index:\n{children_index[:max_debug]}')
         return children_index
 
     def expand(self, player_id: torch.Tensor, batch_index: torch.Tensor, node_index: torch.Tensor, policy_logits: torch.Tensor):
         if len(batch_index) != len(self.saved_children_index):
-            max_debug = 10
-            self.logger.critical(f'expand: batch_index: {batch_index.shape}\n{batch_index[:max_debug]}\n'
-                              f'saved_children_index: {self.saved_children_index.shape}\n{self.saved_children_index[:max_debug]}\n'
-                              f'node_index: {node_index.shape}\n{node_index[:max_debug]}')
+            # max_debug = 10
+            # self.logger.critical(f'expand: batch_index: {batch_index.shape}\n{batch_index[:max_debug]}\n'
+            #                   f'saved_children_index: {self.saved_children_index.shape}\n{self.saved_children_index[:max_debug]}\n'
+            #                   f'node_index: {node_index.shape}\n{node_index[:max_debug]}')
             raise ValueError(f'invalid batch index')
 
         node_index = node_index.unsqueeze(1)
@@ -150,14 +152,15 @@ class Tree:
         children_index = self.new_children_index(batch_index)
         self.saved_children_index.scatter_(1, node_index, self.simulation_index)
 
-        if False: self.logger.debug(f'expand: generation: {self.simulation_index}, node_index: {node_index[:max_debug]}, children_index:\n{children_index[:max_debug]}')
+        # max_debug = 10
+        # self.logger.info(f'expand: generation: {self.simulation_index}, node_index: {node_index[:max_debug]}, children_index:\n{children_index[:max_debug]}')
 
         self.expanded.scatter_(1, node_index, True)
         self.player_id.scatter_(1, node_index, player_id.unsqueeze(1))
 
         probs = torch.softmax(policy_logits, 1)
         self.prior.scatter_(1, children_index, probs)
-        #if False: self.logger.debug(f'expand: priors:\n{self.prior[batch_index].gather(1, children_index)[:max_debug]}')
+        #self.logger.debug(f'expand: priors:\n{self.prior[batch_index].gather(1, children_index)[:max_debug]}')
 
         self.simulation_index += 1
 
@@ -179,16 +182,17 @@ class Tree:
 
     def select_children(self, batch_index: torch.Tensor, node_index: torch.Tensor) -> torch.Tensor:
         children_index = self.children_index(batch_index, node_index)
-        if False: self.logger.debug(f'select_children: node_index: {node_index}, children_index:\n{children_index}')
+        #self.logger.debug(f'select_children: node_index: {node_index}, children_index:\n{children_index}')
 
         ucb_scores = self.ucb_scores(batch_index, node_index, children_index)
-        if False: self.logger.debug(f'select_children: usb_scores:\n{ucb_scores}')
+        #self.logger.debug(f'select_children: usb_scores:\n{ucb_scores}')
         max_scores, max_indexes = ucb_scores.max(1)
-        debug_max = 10
-        if False: self.logger.debug(f'select_children: batch_index: {batch_index[:debug_max]}, '
-                         f'node_index: {node_index[:debug_max]}, '
-                         f'max_scores: {max_scores[:debug_max]}, '
-                         f'max_indexes: {max_indexes[:debug_max]}')
+
+        # debug_max = 10
+        # self.logger.debug(f'select_children: batch_index: {batch_index[:debug_max]}, '
+        #                  f'node_index: {node_index[:debug_max]}, '
+        #                  f'max_scores: {max_scores[:debug_max]}, '
+        #                  f'max_indexes: {max_indexes[:debug_max]}')
 
         children_index = children_index.gather(1, max_indexes.unsqueeze(1)).squeeze(1)
         return max_indexes, children_index
@@ -214,25 +218,25 @@ class Tree:
         return score
 
     def backpropagate(self, player_id: torch.Tensor, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
-        for current_episode_len in torch.arange(episode_len.max()-1, -1, step=-1).to(self.hparams.device):
+        for current_episode_len in torch.arange(episode_len.max(), -1, step=-1).to(self.hparams.device):
             batch_index = torch.arange(self.hparams.batch_size)[episode_len >= current_episode_len].to(self.hparams.device)
 
             node_index = search_path[batch_index, current_episode_len]
             node_multiplier = torch.where(self.player_id[batch_index, node_index] == player_id[batch_index], 1., -1.)
 
-            debug_max = 10
-            if False: self.logger.debug(f'backpropagate: '
-                             f'self.player_id: {self.player_id[batch_index, node_index][:debug_max]}, '
-                             f'player_id: {player_id[batch_index][:debug_max]}, '
-                             f'node_index: {node_index.shape}, node_index:\n{node_index[:debug_max]}')
+            # debug_max = 10
+            # self.logger.info(f'backpropagate: '
+            #                  f'self.player_id: {self.player_id[batch_index, node_index][:debug_max]}, '
+            #                  f'player_id: {player_id[batch_index][:debug_max]}, '
+            #                  f'node_index: {node_index.shape}, node_index:\n{node_index[:debug_max]}')
 
-            if False: self.logger.debug(f'backpropagate: batch_index: {batch_index.shape}, batch_index: {batch_index[:debug_max]}, '
-                             f'current_episode_len: {current_episode_len}/{episode_len.max()}/{episode_len[:debug_max]}, '
-                             f'value: {value[batch_index].shape}/{value.shape}, '
-                             f'value: {value[batch_index][:debug_max]}/{value[:debug_max]}')
+            # self.logger.debug(f'backpropagate: batch_index: {batch_index.shape}, batch_index: {batch_index[:debug_max]}, '
+            #                  f'current_episode_len: {current_episode_len}/{episode_len.max()}/{episode_len[:debug_max]}, '
+            #                  f'value: {value[batch_index].shape}/{value.shape}, '
+            #                  f'value: {value[batch_index][:debug_max]}/{value[:debug_max]}')
 
             self.value_sum[batch_index, node_index] += value[batch_index] * node_multiplier
-            if False: self.logger.debug(f'backpropagate: node_multiplier: {node_multiplier}, value_sum:\n{self.value_sum[batch_index]}')
+            # self.logger.info(f'backpropagate: node_multiplier: {node_multiplier}, value_sum:\n{self.value_sum[batch_index]}')
             self.visit_count[batch_index, node_index] += 1
 
             value[batch_index] = self.reward[batch_index, node_index] * node_multiplier + self.hparams.discount * value[batch_index]
@@ -271,7 +275,7 @@ class Tree:
     def run_one(self):
         search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long().to(self.hparams.device)
         actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
-        episode_len = torch.ones(self.hparams.batch_size).long().to(self.hparams.device)
+        episode_len = torch.zeros(self.hparams.batch_size).long().to(self.hparams.device)
         player_id = torch.ones(self.hparams.batch_size).long().to(self.hparams.device) * self.hparams.player_ids[0]
         max_debug = 10
 
@@ -286,14 +290,14 @@ class Tree:
         for depth_index in range(0, self.hparams.max_episode_len):
             action_index, children_index = self.select_children(batch_index, node_index)
 
-            if False: self.logger.debug(f'depth: {depth_index}, '
-                             f'player_id: {player_id[batch_index][:max_debug]}, '
-                             f'node_index: {node_index.shape}, '
-                             f'node_index: {node_index[:max_debug]}, '
-                             f'action_index: {action_index.shape}, '
-                             f'action_index: {action_index[:max_debug]}, '
-                             f'children_index: {children_index.shape}, '
-                             f'children_index: {children_index[:max_debug]}')
+            # self.logger.info(f'depth: {depth_index}, '
+            #                  f'player_id: {player_id[batch_index][:max_debug]}, '
+            #                  f'node_index: {node_index.shape}, '
+            #                  f'node_index: {node_index[:max_debug]}, '
+            #                  f'action_index: {action_index.shape}, '
+            #                  f'action_index: {action_index[:max_debug]}, '
+            #                  f'children_index: {children_index.shape}, '
+            #                  f'children_index: {children_index[:max_debug]}')
 
             search_path[batch_index, depth_index+1] = children_index.detach().clone()
             actions[batch_index, depth_index] = action_index.detach().clone()
@@ -304,7 +308,7 @@ class Tree:
             node_index = children_index[expanded_index]
             batch_index = batch_index[expanded_index]
 
-            if False: self.logger.debug(f'depth: {depth_index}, node_index: {node_index.shape}, node_index: {node_index[:max_debug]}, player_id: {player_id[batch_index][:max_debug]}')
+            # self.logger.info(f'depth: {depth_index}, node_index: {node_index.shape}, node_index: {node_index[:max_debug]}, player_id: {player_id[batch_index][:max_debug]}')
             if len(node_index) == 0:
                 break
 
@@ -312,22 +316,36 @@ class Tree:
                 player_id[batch_index] = player_id_change(self.hparams, player_id[batch_index])
 
 
-        if False: self.logger.debug(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()]}')
-        if False: self.logger.debug(f'actions: {actions.shape}\n{actions[:max_debug, :episode_len.max()-1]}')
-        if False: self.logger.debug(f'episode_len: {episode_len[:max_debug]}')
-        if False: self.logger.debug(f'player_id: {player_id[:max_debug]}')
+        try:
+            batch_index = torch.arange(self.hparams.batch_size).to(self.hparams.device)
 
-        hidden_states = self.load_states(search_path, episode_len-1)
-        last_actions = actions.gather(1, episode_len.unsqueeze(1)).squeeze(1)
-        out = self.inference.recurrent(hidden_states, last_actions)
-        self.store_states(search_path, episode_len, out.hidden_state)
+            last_episode = episode_len - 1
+            last_episode = last_episode.unsqueeze(1)
 
-        batch_index = torch.arange(self.hparams.batch_size).to(self.hparams.device)
-        parent_index = search_path.gather(1, episode_len.unsqueeze(1)-1).squeeze(1)
-        if False: self.logger.debug(f'parent_index: {parent_index[:max_debug]}')
-        self.expand(player_id, batch_index, parent_index, out.policy_logits)
+            hidden_states = self.load_states(search_path, episode_len)
 
-        self.backpropagate(player_id, search_path, episode_len, out.value)
+            last_actions = actions.gather(1, last_episode).squeeze(1)
+            out = self.inference.recurrent(hidden_states, last_actions)
+            self.store_states(search_path, episode_len+1, out.hidden_state)
+
+
+            parent_index = search_path.gather(1, episode_len.unsqueeze(1)).squeeze(1)
+
+            # max_debug = 10
+            # self.logger.info(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()+1]}')
+            # self.logger.info(f'actions: {actions.shape}\n{actions[:max_debug, :episode_len.max()]}')
+            # self.logger.info(f'episode_len: {episode_len[:max_debug]}')
+            # self.logger.info(f'parent_index: {parent_index[:max_debug]}')
+
+            self.expand(player_id, batch_index, parent_index, out.policy_logits)
+
+            self.backpropagate(player_id, search_path, episode_len, out.value)
+        except:
+            self.logger.error(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()+1]}')
+            self.logger.error(f'actions: {actions.shape}\n{actions[:max_debug, :episode_len.max()]}')
+            self.logger.error(f'episode_len: {episode_len[:max_debug]}')
+            self.logger.error(f'player_id: {player_id[:max_debug]}')
+            raise
 
         return search_path, episode_len
 
