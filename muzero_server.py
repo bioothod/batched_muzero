@@ -48,7 +48,9 @@ class MuzeroServer(muzero_pb2_grpc.MuzeroServicer):
 
     def SendGameStats(self, request, context) -> muzero_pb2.Status:
         games = pickle.loads(request.stats)
-        self.all_games[request.generation] += games
+        dst_list = self.all_games[request.generation]
+        for game in games:
+            dst_list.append(game.move(self.hparams.device))
 
         self.logger.debug(f'server: game stats update: '
                          f'generation: r{request.generation}, s{self.generation}, '
