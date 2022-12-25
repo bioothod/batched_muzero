@@ -11,7 +11,7 @@ from hparams import Hparams
 from inference import Inference
 import mcts
 
-def roll_by_gather(mat,dim, shifts: torch.LongTensor):
+def roll_by_gather(mat, dim, shifts: torch.LongTensor):
     # assumes 2D array
     n_rows, n_cols = mat.shape
 
@@ -48,6 +48,19 @@ class GameStats:
             'game_states': self.game_states,
         }
 
+    def move(self, device):
+        self.hparams.device = device
+
+        self.episode_len = self.episode_len.to(device)
+        self.rewards = self.rewards.to(device)
+        self.root_values = self.root_values.to(device)
+        self.children_visits = self.children_visits.to(device)
+        self.actions = self.actions.to(device)
+        self.player_ids = self.player_ids.to(device)
+        self.dones = self.dones.to(device)
+        self.game_states = self.game_states.to(device)
+        return self
+
     def __len__(self):
         return self.episode_len.sum().item()
 
@@ -81,32 +94,55 @@ class GameStats:
         batch_index = torch.arange(len(start_index), dtype=torch.int64, device=self.hparams.device)
         game_states = self.game_states[batch_index, start_index]
 
+        if start_index.device != self.episode_len.device:
+            msg = f'start_index: {start_index.device}, self.episode_len: {self.episode_len.device}'
+            self.logger.critical(msg)
+            raise ValueError(msg)
+
+
         for unroll_index in range(0, self.hparams.num_unroll_steps+1):
             current_index = start_index + unroll_index
             bootstrap_index = current_index + self.hparams.td_steps
 
+            if bootstrap_index.device != self.episode_len.device:
+                self.logger.critical(f'bootstrap_index: {bootstrap_index.device}, self.episode_len: {self.episode_len.device}')
+                exit(-1)
+
             bootstrap_update_index = bootstrap_index < self.episode_len
             valid_batch_index = batch_index[bootstrap_update_index]
 
-            if False:
-                self.logger.info(f'{unroll_index}: '
-                             f'start_index: {start_index.cpu().numpy()}, '
-                             f'current_index: {current_index.cpu().numpy()}, '
-                             f'bootstrap_index: {bootstrap_index.cpu().numpy()}, '
-                             f'bootstrap_update_index: {bootstrap_update_index.cpu().numpy()}/{bootstrap_update_index.shape}, '
-                             f'valid_batch_index: {valid_batch_index.cpu().numpy()}'
-                             )
-            values = torch.zeros(len(self.root_values), dtype=self.root_values.dtype, device=self.root_values.device)
+            # self.logger.info(f'{unroll_index}: '
+            #              f'start_index: {start_index.cpu().numpy()}, '
+            #              f'current_index: {current_index.cpu().numpy()}, '
+            #              f'bootstrap_index: {bootstrap_index.cpu().numpy()}, '
+            #              f'bootstrap_update_index: {bootstrap_update_index.cpu().numpy()}/{bootstrap_update_index.shape}, '
+            #              f'valid_batch_index: {valid_batch_index.cpu().numpy()}'
+            #              )
+            values = torch.zeros(len(self.root_values), dtype=self.root_values.dtype, device=self.hparams.device)
             if bootstrap_update_index.sum() > 0:
-                self.logger.info(f'bootstrap_update_index: {bootstrap_update_index}')
+                #self.logger.info(f'bootstrap_update_index: {bootstrap_update_index}')
                 values[bootstrap_update_index] = self.root_values[valid_batch_index, bootstrap_index] * self.hparams.discount ** self.hparams.td_steps
 
             discount_mult = torch.logspace(0, self.hparams.td_steps, self.rewards.shape[1], base=self.hparams.discount).to(self.hparams.device)
+            if discount_mult.device != start_index.device:
+                msg = f'1 start_index: {start_index.device}, discount_mutl: {discount_mult.device}, hparams.device: {self.hparams.device}'
+                self.logger.critical(msg)
+                raise ValueError(msg)
+
             discount_mult = discount_mult.unsqueeze(0)
             discount_mult = discount_mult.tile([len(values), 1])
+            if discount_mult.device != start_index.device:
+                msg = f'2 start_index: {start_index.device}, discount_mutl: {discount_mult.device}, hparams.device: {self.hparams.device}'
+                self.logger.critical(msg)
+                raise ValueError(msg)
 
             last_index = torch.minimum(bootstrap_index, self.episode_len)
             all_rewards_index = torch.arange(self.rewards.shape[1], device=self.hparams.device).long().unsqueeze(0).tile([len(start_index), 1])
+
+            if discount_mult.device != start_index.device:
+                msg = f'start_index: {start_index.device}, discount_mutl: {discount_mult.device}'
+                self.logger.critical(msg)
+                raise ValueError(msg)
 
             discount_mult = roll_by_gather(discount_mult, 1, start_index.unsqueeze(1))
             discount_mult = torch.where(all_rewards_index < current_index.unsqueeze(1), 0, discount_mult)
@@ -152,6 +188,8 @@ class Train:
         self.game_stats = GameStats(hparams, self.logger)
 
     def run_simulations(self, initial_player_id: torch.Tensor, initial_game_states: torch.Tensor):
+        start_simulation_time = perf_counter()
+
         tree = mcts.Tree(self.hparams, initial_player_id, self.inference, self.logger)
 
         batch_size = len(initial_game_states)
@@ -167,18 +205,16 @@ class Train:
 
         tree.expand(initial_player_id, batch_index, node_index, out.policy_logits)
 
-        start_simulation_time = perf_counter()
-
         for _ in range(self.hparams.num_simulations):
             search_path, episode_len = tree.run_one()
         simulation_time = perf_counter() - start_simulation_time
         one_sim_ms = int(simulation_time / self.hparams.num_simulations * 1000)
-        if False:
-            self.logger.info(f'train: {self.num_train_steps:2d}: '
-                         f'batch_size: {batch_size}, '
-                         f'num_simulations: {self.hparams.num_simulations}, '
-                         f'time: {simulation_time:.3f} sec, '
-                         f'one_sim: {one_sim_ms:3d} ms')
+
+        # self.logger.info(f'train: {self.num_train_steps:2d}: '
+        #              f'batch_size: {batch_size}, '
+        #              f'num_simulations: {self.hparams.num_simulations}, '
+        #              f'time: {simulation_time:.3f} sec, '
+        #              f'one_sim: {one_sim_ms:3d} ms')
 
         actions = self.select_actions(batch_size, tree)
 
@@ -208,6 +244,7 @@ class Train:
 
         dist = torch.pow(visit_counts.float(), 1 / temperature)
         actions = torch.multinomial(dist, 1)
+
         return actions.squeeze(1)
 
 def run_single_game(hparams: Hparams, train: Train, num_steps: int):
