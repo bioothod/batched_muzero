@@ -204,9 +204,15 @@ class Train:
         tree.store_states(search_path, episode_len, out.hidden_state)
 
         tree.expand(initial_player_id, batch_index, node_index, out.policy_logits)
+        tree.visit_count[batch_index, node_index] = 1
+        tree.value_sum[batch_index, node_index] += out.value
+
+        if self.hparams.add_exploration_noise:
+            children_index = tree.children_index(batch_index, node_index)
+            tree.add_exploration_noise(batch_index, children_index, self.hparams.exploration_fraction)
 
         for _ in range(self.hparams.num_simulations):
-            search_path, episode_len = tree.run_one()
+            search_path, episode_len = tree.run_one_simulation()
         simulation_time = perf_counter() - start_simulation_time
         one_sim_ms = int(simulation_time / self.hparams.num_simulations * 1000)
 
@@ -216,8 +222,6 @@ class Train:
         #              f'time: {simulation_time:.3f} sec, '
         #              f'one_sim: {one_sim_ms:3d} ms')
 
-        actions = self.select_actions(batch_size, tree)
-
         node_index = torch.zeros(batch_size).long().to(self.hparams.device)
         children_index = tree.children_index(batch_index, node_index)
         children_visit_counts = tree.visit_count[batch_index].gather(1, children_index)
@@ -225,27 +229,27 @@ class Train:
         children_visits = children_visit_counts / children_sum_visits.unsqueeze(1)
         root_values = tree.value(batch_index, node_index.unsqueeze(1)).squeeze(1)
 
+        if self.num_train_steps >= 50:
+            actions = torch.argmax(children_visit_counts, 1)
+        else:
+            temperature = 1.0 # play according to softmax distribution
+
+            dist = torch.pow(children_visit_counts.float(), 1 / temperature)
+            actions = torch.multinomial(dist, 1)
+
+        actions = actions.squeeze(1)
+
+        # max_debug = 10
+        # self.logger.info(f'train_steps: {self.num_train_steps}, '
+        #                  f'children_index:\n{children_index[:max_debug]}\n'
+        #                  f'children_visit_counts:\n{children_visit_counts[:max_debug]}\n'
+        #                  f'children_sum_visits:\n{children_sum_visits[:max_debug]}\n'
+        #                  f'children_visits:\n{children_visits[:max_debug]}\n'
+        #                  f'actions:\n{actions[:max_debug]}')
         return actions, children_visits, root_values
 
     def update_train_steps(self):
         self.num_train_steps += 1
-
-    def select_actions(self, batch_size: int, tree: mcts.Tree):
-        batch_index = torch.arange(batch_size, device=self.hparams.device).long()
-        node_index = torch.zeros(batch_size, device=self.hparams.device).long()
-        children_index = tree.children_index(batch_index, node_index)
-        visit_counts = tree.visit_count[batch_index].gather(1, children_index)
-
-        if self.num_train_steps >= 50:
-            actions = torch.argmax(visit_counts, 1)
-            return actions
-
-        temperature = 1.0 # play according to softmax distribution
-
-        dist = torch.pow(visit_counts.float(), 1 / temperature)
-        actions = torch.multinomial(dist, 1)
-
-        return actions.squeeze(1)
 
 def run_single_game(hparams: Hparams, train: Train, num_steps: int):
     game_hparams = connectx_impl.Hparams()
