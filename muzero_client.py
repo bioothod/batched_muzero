@@ -93,31 +93,32 @@ class MuzeroCollectionClient:
         self.logger.info(f'game stats updated: {self.generation} -> {resp.generation}')
 
     def collect_episode(self):
-        self.update_weights()
-        if self.generation < 0:
-            return
-
-        start_time = perf_counter()
-
-        self.inference.train(False)
-        train = simulation.Train(self.hparams, self.inference, self.logger)
         with torch.no_grad():
+            self.update_weights()
+            if self.generation < 0:
+                return
+
+            start_time = perf_counter()
+
+            self.inference.train(False)
+
+            train = simulation.Train(self.hparams, self.inference, self.logger)
             game_stats = simulation.run_single_game(self.hparams, train, num_steps=-1)
 
-        collection_time = perf_counter() - start_time
-        self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.global_step)
+            collection_time = perf_counter() - start_time
+            self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.global_step)
 
-        for i in range(4):
-            self.summary_writer.add_histogram(f'collect/{self.client_id}/children_visits{i}', game_stats.children_visits[:, :, i], self.global_step)
-            self.summary_writer.add_histogram(f'collect/{self.client_id}/actions{i}', game_stats.actions[:, i], self.global_step)
+            for i in range(4):
+                self.summary_writer.add_histogram(f'collect/{self.client_id}/children_visits{i}', game_stats.children_visits[:, :, i], self.global_step)
+                self.summary_writer.add_histogram(f'collect/{self.client_id}/actions{i}', game_stats.actions[:, i], self.global_step)
 
-        self.summary_writer.add_scalar(f'collect/{self.client_id}/root_values', game_stats.root_values[:, 0].mean(), self.global_step)
-        self.summary_writer.add_scalar(f'collect/{self.client_id}/rewards', game_stats.rewards.mean(), self.global_step)
-        self.summary_writer.add_scalar(f'collect/{self.client_id}/train_steps', train.num_train_steps, self.global_step)
+            self.summary_writer.add_scalar(f'collect/{self.client_id}/root_values', game_stats.root_values[:, 0].mean(), self.global_step)
+            self.summary_writer.add_scalar(f'collect/{self.client_id}/rewards', game_stats.rewards.mean(), self.global_step)
+            self.summary_writer.add_scalar(f'collect/{self.client_id}/train_steps', train.num_train_steps, self.global_step)
 
-        self.send_game_stats(game_stats)
+            self.send_game_stats(game_stats)
 
-        self.global_step += 1
+            self.global_step += 1
 
 
 def run_process(client_id: str, hparams: Hparams):
