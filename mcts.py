@@ -132,7 +132,7 @@ class Tree:
         children_index += self.start_offset
 
         # max_debug = 10
-        # self.logger.debug(f'children_index: batch_index: {batch_index[:max_debug]}, '
+        # self.logger.info(f'children_index: batch_index: {batch_index[:max_debug]}, '
         #              f'simulation_index: {self.simulation_index}, '
         #              f'generation_index: {generation_index[:max_debug, 0]}, '
         #              f'node_index: {node_index[:max_debug]}, '
@@ -164,9 +164,9 @@ class Tree:
 
         self.simulation_index += 1
 
-    def value(self, batch_index: torch.Tensor, node_index: torch.Tensor) -> torch.Tensor:
-        visit_count = self.visit_count[batch_index].gather(1, node_index)
-        value_sum = self.value_sum[batch_index].gather(1, node_index)
+    def value(self, batch_index: torch.Tensor, children_index: torch.Tensor) -> torch.Tensor:
+        visit_count = self.visit_count[batch_index].gather(1, children_index)
+        value_sum = self.value_sum[batch_index].gather(1, children_index)
 
         return torch.where(visit_count == 0, 0, value_sum / visit_count)
 
@@ -176,23 +176,39 @@ class Tree:
         noise = dist.sample()
         noise = noise.to(self.hparams.device)
 
-        priors = self.prior[batch_index].gather(1, node_index.unsqueeze(1))
-        priors = priors * (1 - exploration_fraction) + noise * exploration_fraction
-        self.prior.scatter_add_(1, node_index.unsqueeze(1), priors)
+        orig_priors = self.prior[batch_index].gather(1, node_index)
+        priors = orig_priors * (1 - exploration_fraction) + noise * exploration_fraction
+        #self.prior.scatter_add_(1, node_index, priors)
+        self.prior.scatter_(1, node_index, priors)
+
+        # max_debug = 10
+        # self.logger.info(f'exploration:\n'
+        #                  f'orig_priors:\n{orig_priors[:max_debug]}\n'
+        #                  f'priors:\n{priors[:max_debug]}\n'
+        #                   f'saved_priors:\n{self.prior.gather(1, node_index)[:max_debug]}\n')
 
     def select_children(self, batch_index: torch.Tensor, node_index: torch.Tensor) -> torch.Tensor:
         children_index = self.children_index(batch_index, node_index)
         #self.logger.debug(f'select_children: node_index: {node_index}, children_index:\n{children_index}')
 
         ucb_scores = self.ucb_scores(batch_index, node_index, children_index)
-        #self.logger.debug(f'select_children: usb_scores:\n{ucb_scores}')
-        max_scores, max_indexes = ucb_scores.max(1)
+        # self.logger.info(f'select_children: usb_scores:\n{ucb_scores}')
+        max_scores, _ = ucb_scores.max(1)
+        not_max_indexes = ucb_scores < max_scores.unsqueeze(1)
 
-        # debug_max = 10
-        # self.logger.debug(f'select_children: batch_index: {batch_index[:debug_max]}, '
-        #                  f'node_index: {node_index[:debug_max]}, '
-        #                  f'max_scores: {max_scores[:debug_max]}, '
-        #                  f'max_indexes: {max_indexes[:debug_max]}')
+        rnd = torch.rand(*ucb_scores.shape, requires_grad=False, device=ucb_scores.device)
+        ucb_scores += rnd
+
+        ucb_scores[not_max_indexes] = 0
+        max_indexes = ucb_scores.argmax(dim=1)
+
+        # max_debug = 10
+        # self.logger.info(f'select_children: batch_index: {batch_index[:max_debug]}, '
+        #                  f'node_index: {node_index[:max_debug]}, '
+        #                  f'children_index:\n{children_index[:max_debug]}\n'
+        #                  f'ucb_scores:\n{ucb_scores[:max_debug]}\n'
+        #                  f'max_scores: {max_scores[:max_debug]}, '
+        #                  f'max_indexes: {max_indexes[:max_debug]}')
 
         children_index = children_index.gather(1, max_indexes.unsqueeze(1)).squeeze(1)
         return max_indexes, children_index
@@ -215,6 +231,16 @@ class Tree:
 
         value_score = self.reward[batch_index].gather(1, children_index) + self.hparams.discount * children_value
         score = prior_score + value_score
+
+        # max_debug = 10
+        # self.logger.info(f'ucb_scores: '
+        #                  f'children_index:\n{children_index[:max_debug]}\n'
+        #                  f'children_visit_counts:\n{children_visit_count[:max_debug]}\n'
+        #                  f'children_prior:\n{children_prior[:max_debug]}\n'
+        #                  f'prior_score:\n{prior_score[:max_debug]}\n'
+        #                  f'children_value:\n{children_value[:max_debug]}\n'
+        #                  f'value_score:\n{value_score[:max_debug]}\n'
+        #                  f'score:\n{score[:max_debug]}')
         return score
 
     def backpropagate(self, player_id: torch.Tensor, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
@@ -272,7 +298,7 @@ class Tree:
         hidden_states = torch.stack(hidden_states, 0).to(self.hparams.device)
         return hidden_states
 
-    def run_one(self):
+    def run_one_simulation(self):
         search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long().to(self.hparams.device)
         actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
         episode_len = torch.zeros(self.hparams.batch_size).long().to(self.hparams.device)
@@ -281,9 +307,6 @@ class Tree:
 
         batch_index = torch.arange(self.hparams.batch_size).to(self.hparams.device)
         node_index = torch.zeros(self.hparams.batch_size).long().to(self.hparams.device)
-
-        if self.hparams.add_exploration_noise:
-            self.add_exploration_noise(batch_index, node_index, self.hparams.exploration_fraction)
 
         search_path[batch_index, 0] = node_index
 
