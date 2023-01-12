@@ -14,8 +14,8 @@ from inference import NetworkOutput
 class NetworkParams:
     observation_shape: List[int] = []
 
-    kernel_size: int = 3
-    hidden_size: int = 16
+    kernel_size: int = 4
+    hidden_size: int = 24
 
     repr_conv_res_num_features: int = 24
     repr_conv_num_blocks: int = 4

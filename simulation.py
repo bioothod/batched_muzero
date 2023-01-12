@@ -229,15 +229,14 @@ class Train:
         children_visits = children_visit_counts / children_sum_visits.unsqueeze(1)
         root_values = tree.value(batch_index, node_index.unsqueeze(1)).squeeze(1)
 
-        if self.num_train_steps >= 50:
+        if self.num_train_steps >= 26:
             actions = torch.argmax(children_visit_counts, 1)
         else:
             temperature = 1.0 # play according to softmax distribution
 
             dist = torch.pow(children_visit_counts.float(), 1 / temperature)
             actions = torch.multinomial(dist, 1)
-
-        actions = actions.squeeze(1)
+            actions = actions.squeeze(1)
 
         # max_debug = 10
         # self.logger.info(f'train_steps: {self.num_train_steps}, '

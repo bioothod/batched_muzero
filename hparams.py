@@ -32,7 +32,7 @@ class Hparams:
     num_unroll_steps: int = 5
     td_steps: int = 42
 
-    max_training_games = 16
+    max_training_games = 8
 
     server_port = 50051
     num_server_workers = 2

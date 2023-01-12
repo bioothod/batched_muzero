@@ -29,7 +29,7 @@ import networks
 import simulation
 
 class Hparams(GenericHparams):
-    init_lr = 1e-4
+    init_lr = 1e-3
     min_lr = 1e-5
 
     num_training_steps = 1000
@@ -81,7 +81,8 @@ class SampleDataset:
         s = self.samples[index]
 
 def scale_gradient(tensor: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    return tensor * scale + tensor.detach() * (1 - scale)
+    #return tensor * scale + tensor.detach() * (1 - scale)
+    return tensor
 
 class Trainer:
     def __init__(self, hparams: Hparams, logger: logging.Logger, eval_ds: EvaluationDataset):
