@@ -9,11 +9,9 @@ from copy import deepcopy
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 from logger import setup_logger
-from hparams import Hparams
-from inference import Inference
+from hparams import GenericHparams as Hparams
 
 class EvaluationDataset:
     def __init__(self, input_file: str, hparams: Hparams, logger: logging.Logger):
@@ -32,7 +30,7 @@ class EvaluationDataset:
             for line in fin:
                 data = json.loads(line)
 
-                game_state = torch.Tensor(data['board']).float().reshape(1, num_rows, num_columns)
+                game_state = torch.Tensor(data['board']).float().reshape(hparams.state_shape)
                 score = data['score']
                 action_scores = np.array(data['move score'])
 

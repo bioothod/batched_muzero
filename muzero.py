@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import itertools
 import logging
@@ -18,21 +18,12 @@ from torch.utils.tensorboard import SummaryWriter
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
-import connectx_impl
 from evaluate_score import EvaluationDataset
-from hparams import Hparams as GenericHparams
-from inference import NetworkOutput
+from hparams import GenericHparams as Hparams, TicTacToeHparams
 from logger import setup_logger
-import mcts
 import muzero_server
 import networks
 import simulation
-
-class Hparams(GenericHparams):
-    init_lr = 1e-3
-    min_lr = 1e-5
-
-    num_training_steps = 1000
 
 class Sample:
     num_steps: int
@@ -81,11 +72,11 @@ class SampleDataset:
         s = self.samples[index]
 
 def scale_gradient(tensor: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    #return tensor * scale + tensor.detach() * (1 - scale)
-    return tensor
+    return tensor * scale + tensor.detach() * (1 - scale)
+    #return tensor
 
 class Trainer:
-    def __init__(self, hparams: Hparams, logger: logging.Logger, eval_ds: EvaluationDataset):
+    def __init__(self, hparams: Hparams, logger: logging.Logger, eval_ds: Optional[EvaluationDataset]):
         self.hparams = hparams
         self.logger = logger
         self.eval_ds = eval_ds
@@ -124,8 +115,8 @@ class Trainer:
         start_pos = []
         for i, max_episode_len in enumerate(game_stat.episode_len):
             max_start_pos = max_episode_len - self.hparams.num_unroll_steps
-            if max_start_pos < 0:
-                pos = 0
+            if max_start_pos <= 0:
+                pos = torch.tensor([0]).long()
             else:
                 pos = torch.randint(low=0, high=max_start_pos.item(), size=(1,))
 
@@ -213,29 +204,30 @@ class Trainer:
 
     def training_step(self, epoch: int):
         self.inference.train(True)
-        self.inference.zero_grad()
-        for opt in self.optimizers:
-            opt.zero_grad()
 
-        all_games = []
-        for gen, games in self.all_games.items():
-            all_games += games
+        all_keys = sorted(list(self.all_games.keys()))
+        all_games = self.all_games
+        self.all_games = defaultdict(list)
+        for key in all_keys:
+            for game_stat in all_games[key]:
+                self.inference.zero_grad()
+                for opt in self.optimizers:
+                    opt.zero_grad()
 
-        game_stat = np.random.choice(all_games)
-        total_loss, total_train_examples = self.training_forward_one_game(epoch, game_stat)
+                total_loss, total_train_examples = self.training_forward_one_game(epoch, game_stat)
 
-        total_loss.backward()
+                total_loss.backward()
 
-        for opt in self.optimizers:
-            opt.step()
+                for opt in self.optimizers:
+                    opt.step()
 
-        self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
-        self.summary_writer.add_scalar('train/samples', total_train_examples, self.global_step)
+                self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
+                self.summary_writer.add_scalar('train/samples', total_train_examples, self.global_step)
 
 
-        self.global_step += 1
+                self.global_step += 1
+                self.save_muzero_server_weights()
 
-        self.save_muzero_server_weights()
         self.move_games()
 
     def move_games(self) -> int:
@@ -289,11 +281,14 @@ class Trainer:
             self.training_step(epoch)
 
             if train_idx % 10 == 0:
-                best_score, good_score = self.run_evaluation(save_if_best=True)
+                self.run_evaluation(save_if_best=True)
 
-        best_score, good_score = self.run_evaluation(save_if_best=True)
+        self.run_evaluation(save_if_best=True)
 
     def run_evaluation(self, save_if_best: bool):
+        if self.eval_ds is None:
+            return
+
         hparams = deepcopy(self.hparams)
         hparams.batch_size = len(self.eval_ds.game_states)
         train = simulation.Train(hparams, self.inference, self.logger)
@@ -367,7 +362,7 @@ class Trainer:
 
 
 def main():
-    hparams = Hparams()
+    hparams = TicTacToeHparams()
 
     epoch = 0
     hparams.batch_size = 128
@@ -380,7 +375,8 @@ def main():
     logger = setup_logger('muzero', logfile, hparams.log_to_stdout)
 
     refmoves_fn = 'refmoves1k_kaggle'
-    eval_ds = EvaluationDataset(refmoves_fn, hparams, logger)
+    #eval_ds = EvaluationDataset(refmoves_fn, hparams, logger)
+    eval_ds = None
 
     trainer = Trainer(hparams, logger, eval_ds)
 

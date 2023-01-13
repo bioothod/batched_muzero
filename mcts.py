@@ -7,13 +7,13 @@ import torch
 
 from copy import deepcopy
 
-from hparams import Hparams
+from hparams import GenericHparams as Hparams
 from inference import Inference, NetworkOutput
 from logger import setup_logger
 
 class MCTSInference(Inference):
     def __init__(self, hparams: Hparams, logger: logging.Logger):
-        super().__init__()
+        super().__init__(hparams, logger)
 
         self.num_actions = hparams.num_actions
         self.logger = logger

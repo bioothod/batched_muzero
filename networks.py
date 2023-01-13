@@ -7,27 +7,27 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from hparams import Hparams
+from hparams import GenericHparams
 from inference import Inference as GenericInference
 from inference import NetworkOutput
 
 class NetworkParams:
     observation_shape: List[int] = []
 
-    kernel_size: int = 4
-    hidden_size: int = 24
+    kernel_size: int
+    hidden_size: int
 
-    repr_conv_res_num_features: int = 24
-    repr_conv_num_blocks: int = 4
+    repr_conv_res_num_features: int
+    repr_conv_num_blocks: int
 
-    pred_conv_res_num_features: int = 24
-    pred_conv_num_blocks: int = 2
-    pred_hidden_linear_layers: List[int] = [256, 256]
-    num_actions: int = 7
+    pred_conv_res_num_features: int
+    pred_conv_num_blocks: int
+    pred_hidden_linear_layers: List[int] = []
+    num_actions: int
 
-    dyn_conv_res_num_features: int = 24
-    dyn_conv_num_blocks: int = 4
-    dyn_reward_linear_layers: List[int] = [256, 256]
+    dyn_conv_res_num_features: int
+    dyn_conv_num_blocks: int
+    dyn_reward_linear_layers: List[int] = []
 
     activation_str: str = 'LeakyReLU'
     activation_args: List = []
@@ -56,6 +56,47 @@ class NetworkParams:
         for k, v in args_dict.items():
             if self.__getattribute__(k) is not None:
                 self.__setattr__(k, v)
+
+class ConnectXParams(NetworkParams):
+    kernel_size: int = 4
+    hidden_size: int = 24
+
+    repr_conv_res_num_features: int = 24
+    repr_conv_num_blocks: int = 4
+
+    pred_conv_res_num_features: int = 24
+    pred_conv_num_blocks: int = 2
+    pred_hidden_linear_layers: List[int] = [256, 256]
+    num_actions: int = 0
+
+    dyn_conv_res_num_features: int = 24
+    dyn_conv_num_blocks: int = 4
+    dyn_reward_linear_layers: List[int] = [256, 256]
+
+    activation_str: str = 'LeakyReLU'
+    activation_args: List = []
+    activation_kwargs: Dict = {'negative_slope': 0.01, 'inplace': True}
+
+class TicTacToeParams(NetworkParams):
+    kernel_size: int = 3
+    hidden_size: int = 12
+
+    repr_conv_res_num_features: int = 12
+    repr_conv_num_blocks: int = 2
+
+    pred_conv_res_num_features: int = 12
+    pred_conv_num_blocks: int = 2
+    pred_hidden_linear_layers: List[int] = [32, 32]
+    num_actions: int = 0
+
+    dyn_conv_res_num_features: int = 12
+    dyn_conv_num_blocks: int = 2
+    dyn_reward_linear_layers: List[int] = [32, 32]
+
+    activation_str: str = 'LeakyReLU'
+    activation_args: List = []
+    activation_kwargs: Dict = {'negative_slope': 0.01, 'inplace': True}
+
 
 class ResidualBlock(nn.Module):
 
@@ -264,11 +305,11 @@ class Dynamic(nn.Module):
         return next_state, reward
 
 class Inference(GenericInference):
-    def __init__(self, hparams: Hparams, logger: logging.Logger):
+    def __init__(self, hparams: GenericHparams, logger: logging.Logger):
         self.logger = logger
         self.hparams = hparams
 
-        net_hparams = NetworkParams(observation_shape=hparams.state_shape)
+        net_hparams = TicTacToeParams(observation_shape=hparams.state_shape, num_actions=hparams.num_actions)
         self.logger.info(f'inference: network_params:\n{net_hparams}')
 
         self.representation = Representation(net_hparams).to(hparams.device)
@@ -289,10 +330,10 @@ class Inference(GenericInference):
         batch_size = len(game_states)
         input_shape = list(game_states.shape[1:]) # remove batch size
 
-        states = torch.zeros(1 + len(self.hparams.player_ids), batch_size, *input_shape[1:]).to(self.hparams.device)
+        states = torch.zeros(1 + len(self.hparams.player_ids), batch_size, *input_shape).to(self.hparams.device)
 
         player_id_exp = player_id.unsqueeze(1)
-        player_id_exp = player_id_exp.tile([1, np.prod(input_shape)]).view([batch_size] + input_shape[1:]).to(self.hparams.device)
+        player_id_exp = player_id_exp.tile([1, np.prod(input_shape)]).view([batch_size] + input_shape).to(self.hparams.device)
         states[0, ...] = player_id_exp
         for player_index, local_player_id in enumerate(self.hparams.player_ids):
             index = game_states == local_player_id
@@ -312,11 +353,10 @@ class Inference(GenericInference):
         return NetworkOutput(reward=rewards, hidden_state=hidden_states, policy_logits=policy_logits, value=values)
 
     def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
+        batch_size = len(hidden_states)
         policy_logits, values = self.prediction(hidden_states)
         actions_exp = F.one_hot(actions, self.hparams.num_actions)
-        actions_exp = actions_exp.unsqueeze(1)
-        fill = hidden_states.shape[2]
-        actions_exp = actions_exp.tile([1, fill, 1])
+        actions_exp = actions_exp.view(batch_size, *self.hparams.state_shape)
         actions_exp = actions_exp.unsqueeze(1)
         inputs = torch.cat([hidden_states, actions_exp], 1)
         new_hidden_states, rewards = self.dynamic(inputs)

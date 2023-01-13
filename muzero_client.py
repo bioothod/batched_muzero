@@ -1,3 +1,4 @@
+import argparse
 import grpc
 import io
 import logging
@@ -14,7 +15,8 @@ from time import perf_counter
 import muzero_pb2
 import muzero_pb2_grpc
 
-from hparams import Hparams
+from hparams import GenericHparams as Hparams
+from hparams import *
 from logger import setup_logger
 from networks import Inference
 import simulation
@@ -125,6 +127,8 @@ def run_process(client_id: str, hparams: Hparams):
     logfile = os.path.join(hparams.checkpoints_dir, f'{client_id}.log')
     logger = setup_logger(client_id, logfile, True)
 
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
     client = MuzeroCollectionClient(client_id, hparams, logger)
     while True:
         client.collect_episode()
@@ -133,15 +137,20 @@ def run_process(client_id: str, hparams: Hparams):
             time.sleep(1)
 
 def main():
-    hparams = Hparams()
-    hparams.batch_size = 512
-    hparams.num_simulations = 800
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--start_id', type=int, default=0, help='Initial id for the clients')
+    parser.add_argument('--num_clients', type=int, default=2, help='Number of clients to start')
+    FLAGS = parser.parse_args()
+
+    hparams = TicTacToeHparams()
+    hparams.batch_size = 1024
+    hparams.num_simulations = 200
     hparams.device = 'cuda:0'
 
     mp.set_start_method('spawn')
 
     processes = []
-    for cid in range(2):
+    for cid in range(FLAGS.start_id, FLAGS.start_id+FLAGS.num_clients):
         client_id = f'client{cid}'
         p = mp.Process(target=run_process, args=(client_id, hparams))
         p.start()

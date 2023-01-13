@@ -6,8 +6,9 @@ from time import perf_counter
 
 import torch
 
-import connectx_impl
-from hparams import Hparams
+#import connectx_impl
+import tictactoe_impl
+from hparams import GenericHparams as Hparams
 from inference import Inference
 import mcts
 
@@ -251,7 +252,8 @@ class Train:
         self.num_train_steps += 1
 
 def run_single_game(hparams: Hparams, train: Train, num_steps: int):
-    game_hparams = connectx_impl.Hparams()
+    #game_hparams = connectx_impl.Hparams()
+    game_hparams = tictactoe_impl.Hparams()
     game_states = torch.zeros(hparams.batch_size, *hparams.state_shape).float().to(hparams.device)
     player_ids = torch.ones(hparams.batch_size, device=hparams.device).long() * hparams.player_ids[0]
 
@@ -261,7 +263,8 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int):
         active_game_states = game_states[active_games_index]
         active_player_ids = player_ids[active_games_index]
         actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
-        new_game_states, rewards, dones = connectx_impl.step_games(game_hparams, active_game_states, active_player_ids, actions)
+        #new_game_states, rewards, dones = connectx_impl.step_games(game_hparams, active_game_states, active_player_ids, actions)
+        new_game_states, rewards, dones = tictactoe_impl.step_games(game_hparams, active_game_states, active_player_ids, actions)
         game_states[active_games_index] = new_game_states
 
         train.game_stats.append(active_games_index, {

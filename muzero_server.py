@@ -9,7 +9,7 @@ import pickle
 import muzero_pb2
 import muzero_pb2_grpc
 
-from hparams import Hparams
+from hparams import GenericHparams as Hparams
 from simulation import GameStats
 
 class MuzeroServer(muzero_pb2_grpc.MuzeroServicer):

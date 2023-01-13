@@ -2,21 +2,21 @@ from typing import List
 
 import torch
 
-class Hparams:
-    checkpoints_dir: str = 'checkpoints_1'
-    log_to_stdout = True
+class GenericHparams:
+    checkpoints_dir: str
+    log_to_stdout: bool
 
-    rows: int = 6
-    columns: int = 7
+    rows: int
+    columns: int
 
-    batch_size: int = 1024
-    state_shape: List[int] = [1, 6, 7]
-    num_actions: int = 7
+    batch_size: int
+    state_shape: List[int]
+    num_actions: int
     device: torch.device = torch.device('cpu')
     dtype: torch.dtype = torch.float32
 
-    max_episode_len: int = 42
-    num_simulations: int = 800
+    max_episode_len: int
+    num_simulations: int
 
     default_reward: float = 0.0
 
@@ -30,9 +30,47 @@ class Hparams:
     player_ids: List[int] = [1, 2]
 
     num_unroll_steps: int = 5
+    td_steps: int
+
+    max_training_games: int = 1
+
+    server_port: int = 50051
+    num_server_workers: int = 2
+
+    num_training_steps: int = 2
+    min_lr = 1e-5
+    init_lr = 1e-4
+
+class ConnectXHparams(GenericHparams):
+    checkpoints_dir: str = 'connectx_checkpoints_1'
+    log_to_stdout = True
+
+    rows: int = 6
+    columns: int = 7
+
+    batch_size: int = 1024
+    state_shape: List[int] = [6, 7]
+    num_actions: int = 7
+
+    max_episode_len: int = 42
+    num_simulations: int = 800
+
+    num_unroll_steps: int = 5
     td_steps: int = 42
 
-    max_training_games = 8
+class TicTacToeHparams(GenericHparams):
+    checkpoints_dir: str = 'tic_tac_toe_checkpoints_1'
+    log_to_stdout = True
 
-    server_port = 50051
-    num_server_workers = 2
+    rows: int = 3
+    columns: int = 3
+
+    batch_size: int = 1024
+    state_shape: List[int] = [3, 3]
+    num_actions: int = 9
+
+    max_episode_len: int = 10
+    num_simulations: int = 800
+
+    num_unroll_steps: int = 5
+    td_steps: int = 42

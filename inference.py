@@ -5,7 +5,7 @@ import logging
 import numpy as np
 import torch
 
-from hparams import Hparams
+from hparams import GenericHparams as Hparams
 
 class NetworkOutput:
     reward: torch.Tensor
