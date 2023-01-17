@@ -79,19 +79,19 @@ class ConnectXParams(NetworkParams):
 
 class TicTacToeParams(NetworkParams):
     kernel_size: int = 3
-    hidden_size: int = 12
+    hidden_size: int = 16
 
-    repr_conv_res_num_features: int = 12
-    repr_conv_num_blocks: int = 2
+    repr_conv_res_num_features: int = 24
+    repr_conv_num_blocks: int = 3
 
-    pred_conv_res_num_features: int = 12
-    pred_conv_num_blocks: int = 2
-    pred_hidden_linear_layers: List[int] = [32, 32]
-    num_actions: int = 0
+    pred_conv_res_num_features: int = 24
+    pred_conv_num_blocks: int = 3
+    pred_hidden_linear_layers: List[int] = [128, 128]
+    num_actions: int = 9
 
-    dyn_conv_res_num_features: int = 12
-    dyn_conv_num_blocks: int = 2
-    dyn_reward_linear_layers: List[int] = [32, 32]
+    dyn_conv_res_num_features: int = 24
+    dyn_conv_num_blocks: int = 3
+    dyn_reward_linear_layers: List[int] = [128, 128]
 
     activation_str: str = 'LeakyReLU'
     activation_args: List = []
@@ -354,11 +354,11 @@ class Inference(GenericInference):
 
     def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
         batch_size = len(hidden_states)
-        policy_logits, values = self.prediction(hidden_states)
         actions_exp = F.one_hot(actions, self.hparams.num_actions)
         actions_exp = actions_exp.view(batch_size, *self.hparams.state_shape)
         actions_exp = actions_exp.unsqueeze(1)
         inputs = torch.cat([hidden_states, actions_exp], 1)
         new_hidden_states, rewards = self.dynamic(inputs)
+        policy_logits, values = self.prediction(new_hidden_states)
         #self.logger.info(f'inference: recurrent: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}, values: {values.shape}')
         return NetworkOutput(reward=rewards, hidden_state=new_hidden_states, policy_logits=policy_logits, value=values)

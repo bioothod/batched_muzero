@@ -61,7 +61,6 @@ class MuzeroCollectionClient:
         self.inference = Inference(hparams, logger)
         tensorboard_log_dir = os.path.join(hparams.checkpoints_dir, 'tensorboard_logs')
         self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir)
-        self.global_step = 0
 
 
     def update_weights(self):
@@ -74,7 +73,6 @@ class MuzeroCollectionClient:
         if len(resp.weights) > 0:
             self.load_weights(resp.weights)
             self.generation = resp.generation
-            self.summary_writer.add_scalar(f'collect/{self.client_id}/generation', self.generation, self.global_step)
 
     def load_weights(self, weights):
         checkpoint = mapped_loads(weights, map_location=self.hparams.device)
@@ -104,30 +102,47 @@ class MuzeroCollectionClient:
 
             self.inference.train(False)
 
-            train = simulation.Train(self.hparams, self.inference, self.logger)
+            train = simulation.Train(self.hparams, self.inference, self.logger, self.summary_writer, f'simulation/{self.client_id}')
             game_stats = simulation.run_single_game(self.hparams, train, num_steps=-1)
 
             collection_time = perf_counter() - start_time
-            self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.global_step)
+            self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.generation)
 
             for i in range(4):
-                self.summary_writer.add_histogram(f'collect/{self.client_id}/children_visits{i}', game_stats.children_visits[:, :, i], self.global_step)
-                self.summary_writer.add_histogram(f'collect/{self.client_id}/actions{i}', game_stats.actions[:, i], self.global_step)
+                valid_index = game_stats.episode_len > i
+                children_visits = game_stats.children_visits[valid_index, :, i].float()
+                actions = game_stats.actions[valid_index, i]
 
-            self.summary_writer.add_scalar(f'collect/{self.client_id}/root_values', game_stats.root_values[:, 0].mean(), self.global_step)
-            self.summary_writer.add_scalar(f'collect/{self.client_id}/rewards', game_stats.rewards.mean(), self.global_step)
-            self.summary_writer.add_scalar(f'collect/{self.client_id}/train_steps', train.num_train_steps, self.global_step)
+                if len(children_visits) > 0:
+                    self.summary_writer.add_histogram(f'collect/{self.client_id}/children_visits{i}', children_visits, self.generation)
+                    self.summary_writer.add_histogram(f'collect/{self.client_id}/actions{i}', actions, self.generation)
+
+            self.summary_writer.add_scalar(f'collect/{self.client_id}/root_values', game_stats.root_values[:, 0].float().mean(), self.generation)
+
+            episode_rewards = game_stats.rewards.float().sum(1)
+            self.summary_writer.add_histogram(f'collect/{self.client_id}/rewards', episode_rewards, self.generation, bins=3)
+            self.summary_writer.add_scalar(f'collect/{self.client_id}/mean_reward', episode_rewards.mean(), self.generation)
+            self.summary_writer.add_scalars(f'collect/{self.client_id}/results', {
+                'wins': (episode_rewards > 0).sum() / len(episode_rewards),
+                'looses': (episode_rewards < 0).sum() / len(episode_rewards),
+                'draws': (episode_rewards == 0).sum() / len(episode_rewards),
+            }, self.generation)
+
+            self.summary_writer.add_histogram(f'collect/{self.client_id}/train_steps', game_stats.episode_len, self.generation)
+            self.summary_writer.add_scalars(f'collect/{self.client_id}/train_steps', {
+                'min': game_stats.episode_len.min(),
+                'max': game_stats.episode_len.max(),
+                'mean': game_stats.episode_len.float().mean(),
+                'median': game_stats.episode_len.float().median(),
+            }, self.generation)
 
             self.send_game_stats(game_stats)
-
-            self.global_step += 1
-
 
 def run_process(client_id: str, hparams: Hparams):
     logfile = os.path.join(hparams.checkpoints_dir, f'{client_id}.log')
     logger = setup_logger(client_id, logfile, True)
 
-    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+    #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
     client = MuzeroCollectionClient(client_id, hparams, logger)
     while True:
@@ -143,7 +158,7 @@ def main():
     FLAGS = parser.parse_args()
 
     hparams = TicTacToeHparams()
-    hparams.batch_size = 1024
+    hparams.batch_size = 1024*4
     hparams.num_simulations = 200
     hparams.device = 'cuda:0'
 

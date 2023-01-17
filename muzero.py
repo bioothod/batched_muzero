@@ -112,17 +112,11 @@ class Trainer:
         self.grpc_server.wait_for_termination()
 
     def training_forward_one_game(self, epoch: int, game_stat: simulation.GameStats):
-        start_pos = []
-        for i, max_episode_len in enumerate(game_stat.episode_len):
-            max_start_pos = max_episode_len - self.hparams.num_unroll_steps
-            if max_start_pos <= 0:
-                pos = torch.tensor([0]).long()
-            else:
-                pos = torch.randint(low=0, high=max_start_pos.item(), size=(1,))
-
-            start_pos.append(pos)
-
-        start_pos = torch.cat(start_pos).to(self.hparams.device)
+        start_pos = torch.randint(low=0, high=game_stat.episode_len.max(), size=(len(game_stat.episode_len),)).to(self.hparams.device)
+        start_pos -= self.hparams.num_unroll_steps
+        start_pos = torch.where(start_pos <= 0, 0, start_pos)
+        start_pos = torch.where(start_pos+self.hparams.num_unroll_steps>=game_stat.episode_len, 0, start_pos)
+        #self.logger.info(f'epoch: {epoch}: start_pos: {start_pos.shape}: {start_pos[:10]}, episode_len: {game_stat.episode_len[:10]}')
 
         self.summary_writer.add_scalars('train/episode_len', {
             'mean': game_stat.episode_len.float().mean(),
@@ -202,33 +196,35 @@ class Trainer:
 
         return total_loss, train_examples
 
+    def training_step_for_one_game(self, epoch: int, game_stat: simulation.GameStats):
+        self.inference.zero_grad()
+        for opt in self.optimizers:
+            opt.zero_grad()
+
+        total_loss, total_train_examples = self.training_forward_one_game(epoch, game_stat)
+
+        total_loss.backward()
+
+        for opt in self.optimizers:
+            opt.step()
+
+        self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
+        self.summary_writer.add_scalar('train/samples', total_train_examples, self.global_step)
+
+        self.global_step += 1
+        self.save_muzero_server_weights()
+
     def training_step(self, epoch: int):
         self.inference.train(True)
 
-        all_keys = sorted(list(self.all_games.keys()))
-        all_games = self.all_games
-        self.all_games = defaultdict(list)
-        for key in all_keys:
-            for game_stat in all_games[key]:
-                self.inference.zero_grad()
-                for opt in self.optimizers:
-                    opt.zero_grad()
-
-                total_loss, total_train_examples = self.training_forward_one_game(epoch, game_stat)
-
-                total_loss.backward()
-
-                for opt in self.optimizers:
-                    opt.step()
-
-                self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
-                self.summary_writer.add_scalar('train/samples', total_train_examples, self.global_step)
-
-
-                self.global_step += 1
-                self.save_muzero_server_weights()
-
         self.move_games()
+        all_keys = sorted(list(self.all_games.keys()))
+        all_games = []
+        for key in all_keys:
+            all_games += self.all_games[key]
+
+        game_stat = np.random.choice(all_games)
+        self.training_step_for_one_game(epoch, game_stat)
 
     def move_games(self) -> int:
         new_games = self.muzero_server.move_games()
@@ -272,8 +268,6 @@ class Trainer:
         self.muzero_server.update_weights(self.global_step, meta)
 
     def run_training(self, epoch: int):
-        self.summary_writer.add_scalar('train/epoch', epoch, self.global_step)
-
         while self.move_games() == 0:
             time.sleep(1)
 

@@ -14,17 +14,21 @@ class GenericHparams:
     num_actions: int
     device: torch.device = torch.device('cpu')
     dtype: torch.dtype = torch.float32
+    game_state_dtype: torch.dtype = torch.int8
 
     max_episode_len: int
     num_simulations: int
 
     default_reward: float = 0.0
 
-    discount: float = 1.0
-    c1: float = 1.25
-    c2: float = 19652
+    ucb_value_score_discount: float = 1
+    value_discount: float = 1
+    #pb_c_init: float = 1.25
+    pb_c_init: float = 4
+    pb_c_base: float = 19652
     add_exploration_noise: bool = True
-    dirichlet_alpha: float = 0.3
+    #dirichlet_alpha: float = 0.3
+    dirichlet_alpha: float = 1
     exploration_fraction: float = 0.25
 
     player_ids: List[int] = [1, 2]
@@ -32,12 +36,12 @@ class GenericHparams:
     num_unroll_steps: int = 5
     td_steps: int
 
-    max_training_games: int = 1
+    max_training_games: int = 50
 
     server_port: int = 50051
     num_server_workers: int = 2
 
-    num_training_steps: int = 2
+    num_training_steps: int = 10
     min_lr = 1e-5
     init_lr = 1e-4
 
@@ -69,8 +73,8 @@ class TicTacToeHparams(GenericHparams):
     state_shape: List[int] = [3, 3]
     num_actions: int = 9
 
-    max_episode_len: int = 10
+    max_episode_len: int = 9
     num_simulations: int = 800
 
     num_unroll_steps: int = 5
-    td_steps: int = 42
+    td_steps: int = 9

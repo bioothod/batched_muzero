@@ -5,6 +5,7 @@ import logging
 from time import perf_counter
 
 import torch
+from torch.utils.tensorboard import SummaryWriter
 
 #import connectx_impl
 import tictactoe_impl
@@ -26,18 +27,27 @@ def roll_by_gather(mat, dim, shifts: torch.LongTensor):
         return torch.gather(mat, 1, arange2)
 
 class GameStats:
+    episode_len: torch.Tensor
+    rewards: torch.Tensor
+    root_values: torch.Tensor
+    children_visits: torch.Tensor
+    actions: torch.Tensor
+    player_ids: torch.Tensor
+    dones: torch.Tensor
+    game_states: torch.Tensor
+
     def __init__(self, hparams: Hparams, logger: logging.Logger):
         self.logger = logger
         self.hparams = hparams
 
-        self.episode_len = torch.zeros(hparams.batch_size, dtype=torch.int64, device=hparams.device)
-        self.rewards = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=hparams.dtype, device=hparams.device)
-        self.root_values = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=hparams.dtype, device=hparams.device)
-        self.children_visits = torch.zeros(hparams.batch_size, hparams.num_actions, hparams.max_episode_len, dtype=hparams.dtype, device=hparams.device)
-        self.actions = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
-        self.player_ids = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
+        self.episode_len = torch.zeros(hparams.batch_size, dtype=torch.uint8, device=hparams.device)
+        self.rewards = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.bfloat16, device=hparams.device)
+        self.root_values = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.bfloat16, device=hparams.device)
+        self.children_visits = torch.zeros(hparams.batch_size, hparams.num_actions, hparams.max_episode_len, dtype=torch.bfloat16, device=hparams.device)
+        self.actions = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.uint8, device=hparams.device)
+        self.player_ids = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.uint8, device=hparams.device)
         self.dones = torch.zeros(hparams.batch_size, dtype=torch.bool, device=hparams.device)
-        self.game_states = torch.zeros([hparams.batch_size, hparams.max_episode_len] + hparams.state_shape, dtype=hparams.dtype, device=hparams.device)
+        self.game_states = torch.zeros([hparams.batch_size, hparams.max_episode_len] + hparams.state_shape, dtype=torch.uint8, device=hparams.device)
 
         self.stored_tensors = {
             'rewards': self.rewards,
@@ -66,7 +76,9 @@ class GameStats:
         return self.episode_len.sum().item()
 
     def append(self, index: torch.Tensor, tensors_dict: Dict[str, torch.Tensor]):
-        episode_len = self.episode_len[index]
+        episode_len = self.episode_len[index].long()
+        index = index.long()
+
         for key, value in tensors_dict.items():
             if not key in self.stored_tensors:
                 msg = f'invalid key: {key}, tensor shape: {value.shape}, available keys: {list(self.stored_tensors.keys())}'
@@ -93,7 +105,7 @@ class GameStats:
         sample_len = torch.zeros(len(start_index), dtype=torch.int64, device=self.hparams.device)
 
         batch_index = torch.arange(len(start_index), dtype=torch.int64, device=self.hparams.device)
-        game_states = self.game_states[batch_index, start_index]
+        game_states = self.game_states[batch_index, start_index].float()
 
         if start_index.device != self.episode_len.device:
             msg = f'start_index: {start_index.device}, self.episode_len: {self.episode_len.device}'
@@ -110,21 +122,21 @@ class GameStats:
                 exit(-1)
 
             bootstrap_update_index = bootstrap_index < self.episode_len
-            valid_batch_index = batch_index[bootstrap_update_index]
 
             # self.logger.info(f'{unroll_index}: '
             #              f'start_index: {start_index.cpu().numpy()}, '
             #              f'current_index: {current_index.cpu().numpy()}, '
             #              f'bootstrap_index: {bootstrap_index.cpu().numpy()}, '
             #              f'bootstrap_update_index: {bootstrap_update_index.cpu().numpy()}/{bootstrap_update_index.shape}, '
-            #              f'valid_batch_index: {valid_batch_index.cpu().numpy()}'
             #              )
-            values = torch.zeros(len(self.root_values), dtype=self.root_values.dtype, device=self.hparams.device)
+            values = torch.zeros(len(self.root_values), device=self.hparams.device).float()
             if bootstrap_update_index.sum() > 0:
                 #self.logger.info(f'bootstrap_update_index: {bootstrap_update_index}')
-                values[bootstrap_update_index] = self.root_values[valid_batch_index, bootstrap_index] * self.hparams.discount ** self.hparams.td_steps
+                valid_batch_index = batch_index[bootstrap_update_index]
+                last_discount = self.hparams.value_discount ** self.hparams.td_steps
+                values[bootstrap_update_index] = self.root_values[valid_batch_index, bootstrap_index].float() * last_discount
 
-            discount_mult = torch.logspace(0, self.hparams.td_steps, self.rewards.shape[1], base=self.hparams.discount).to(self.hparams.device)
+            discount_mult = torch.logspace(0, self.hparams.td_steps, self.rewards.shape[1], base=self.hparams.value_discount).to(self.hparams.device)
             if discount_mult.device != start_index.device:
                 msg = f'1 start_index: {start_index.device}, discount_mutl: {discount_mult.device}, hparams.device: {self.hparams.device}'
                 self.logger.critical(msg)
@@ -152,7 +164,7 @@ class GameStats:
             masked_rewards = torch.where(all_rewards_index < current_index.unsqueeze(1), 0, self.rewards)
             masked_rewards = torch.where(all_rewards_index >= last_index.unsqueeze(1), 0, masked_rewards)
 
-            discounted_rewards = self.rewards * discount_mult
+            discounted_rewards = self.rewards.float() * discount_mult
             discounted_rewards = discounted_rewards.sum(1)
             values += discounted_rewards
 
@@ -160,12 +172,12 @@ class GameStats:
 
             current_valid_index = current_index[valid_index]
             target_values[valid_index, unroll_index] = values[valid_index]
-            target_children_visits[valid_index, :, unroll_index] = self.children_visits[valid_index, :, current_valid_index]
+            target_children_visits[valid_index, :, unroll_index] = self.children_visits[valid_index, :, current_valid_index].float()
 
             if unroll_index > 0:
-                target_last_rewards[valid_index, unroll_index] = self.rewards[valid_index, current_valid_index-1]
-            taken_actions[valid_index, unroll_index] = self.actions[valid_index, current_valid_index]
-            player_ids[valid_index, unroll_index] = self.player_ids[valid_index, current_valid_index]
+                target_last_rewards[valid_index, unroll_index] = self.rewards[valid_index, current_valid_index-1].float()
+            taken_actions[valid_index, unroll_index] = self.actions[valid_index, current_valid_index].long()
+            player_ids[valid_index, unroll_index] = self.player_ids[valid_index, current_valid_index].long()
             sample_len[valid_index] += 1
 
         return {
@@ -180,10 +192,13 @@ class GameStats:
 
 
 class Train:
-    def __init__(self, hparams: Hparams, inference: Inference, logger: logging.Logger):
+    def __init__(self, hparams: Hparams, inference: Inference, logger: logging.Logger, summary_writer: SummaryWriter, summary_prefix: str):
         self.hparams = hparams
         self.logger = logger
         self.inference = inference
+        self.summary_writer = summary_writer
+        self.summary_prefix = summary_prefix
+        self.summary_step = 0
 
         self.num_train_steps = 0
         self.game_stats = GameStats(hparams, self.logger)
@@ -199,21 +214,22 @@ class Train:
 
         out = self.inference.initial(initial_player_id, initial_game_states)
 
-        episode_len = torch.ones(len(node_index)).long().to(self.hparams.device)
+        episode_len = torch.ones(len(node_index), dtype=torch.uint8).to(self.hparams.device)
         search_path = torch.zeros(len(node_index), 1).long().to(self.hparams.device)
 
         tree.store_states(search_path, episode_len, out.hidden_state)
 
-        tree.expand(initial_player_id, batch_index, node_index, out.policy_logits)
+        tree.expand(initial_player_id, batch_index, node_index, out.policy_logits.type(torch.bfloat16))
         tree.visit_count[batch_index, node_index] = 1
-        tree.value_sum[batch_index, node_index] += out.value
+        tree.value_sum[batch_index, node_index] += out.value.type(torch.bfloat16)
 
         if self.hparams.add_exploration_noise:
             children_index = tree.children_index(batch_index, node_index)
             tree.add_exploration_noise(batch_index, children_index, self.hparams.exploration_fraction)
 
         for _ in range(self.hparams.num_simulations):
-            search_path, episode_len = tree.run_one_simulation()
+            search_path, episode_len = tree.run_one_simulation(initial_player_id)
+
         simulation_time = perf_counter() - start_simulation_time
         one_sim_ms = int(simulation_time / self.hparams.num_simulations * 1000)
 
@@ -225,26 +241,29 @@ class Train:
 
         node_index = torch.zeros(batch_size).long().to(self.hparams.device)
         children_index = tree.children_index(batch_index, node_index)
-        children_visit_counts = tree.visit_count[batch_index].gather(1, children_index)
+        children_visit_counts = tree.visit_count[batch_index].gather(1, children_index).float()
         children_sum_visits = children_visit_counts.sum(1)
         children_visits = children_visit_counts / children_sum_visits.unsqueeze(1)
         root_values = tree.value(batch_index, node_index.unsqueeze(1)).squeeze(1)
 
-        if self.num_train_steps >= 26:
+        if self.num_train_steps >= 6:
             actions = torch.argmax(children_visit_counts, 1)
         else:
             temperature = 1.0 # play according to softmax distribution
 
-            dist = torch.pow(children_visit_counts.float(), 1 / temperature)
+            dist = torch.pow(children_visit_counts, 1 / temperature)
             actions = torch.multinomial(dist, 1)
             actions = actions.squeeze(1)
 
+        actions = actions.type(torch.uint8)
+        children_visits = children_visits.type(torch.bfloat16)
         # max_debug = 10
         # self.logger.info(f'train_steps: {self.num_train_steps}, '
         #                  f'children_index:\n{children_index[:max_debug]}\n'
         #                  f'children_visit_counts:\n{children_visit_counts[:max_debug]}\n'
         #                  f'children_sum_visits:\n{children_sum_visits[:max_debug]}\n'
         #                  f'children_visits:\n{children_visits[:max_debug]}\n'
+        #                  f'root_values: {root_values.shape}\n{root_values[:max_debug]}\n'
         #                  f'actions:\n{actions[:max_debug]}')
         return actions, children_visits, root_values
 
@@ -254,8 +273,8 @@ class Train:
 def run_single_game(hparams: Hparams, train: Train, num_steps: int):
     #game_hparams = connectx_impl.Hparams()
     game_hparams = tictactoe_impl.Hparams()
-    game_states = torch.zeros(hparams.batch_size, *hparams.state_shape).float().to(hparams.device)
-    player_ids = torch.ones(hparams.batch_size, device=hparams.device).long() * hparams.player_ids[0]
+    game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.uint8).to(hparams.device)
+    player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.uint8) * hparams.player_ids[0]
 
     active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
 
@@ -265,7 +284,7 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int):
         actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
         #new_game_states, rewards, dones = connectx_impl.step_games(game_hparams, active_game_states, active_player_ids, actions)
         new_game_states, rewards, dones = tictactoe_impl.step_games(game_hparams, active_game_states, active_player_ids, actions)
-        game_states[active_games_index] = new_game_states
+        game_states[active_games_index] = new_game_states.detach().clone()
 
         train.game_stats.append(active_games_index, {
             'children_visits': children_visits,
