@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional
 
+import argparse
 import itertools
 import logging
 import pickle
@@ -19,8 +20,9 @@ from torch.utils.tensorboard import SummaryWriter
 torch.backends.cuda.matmul.allow_tf32 = True
 
 from evaluate_score import EvaluationDataset
-from hparams import GenericHparams as Hparams, TicTacToeHparams
+from hparams import GenericHparams as Hparams
 from logger import setup_logger
+import module_loader
 import muzero_server
 import networks
 import simulation
@@ -76,16 +78,17 @@ def scale_gradient(tensor: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     #return tensor
 
 class Trainer:
-    def __init__(self, hparams: Hparams, logger: logging.Logger, eval_ds: Optional[EvaluationDataset]):
-        self.hparams = hparams
+    def __init__(self, game_ctl: module_loader.GameModule, logger: logging.Logger, eval_ds: Optional[EvaluationDataset]):
+        self.game_ctl = game_ctl
+        self.hparams = game_ctl.hparams
         self.logger = logger
         self.eval_ds = eval_ds
 
         self.max_best_score = None
 
-        self.grpc_server, self.muzero_server = muzero_server.start_server(hparams, logger)
+        self.grpc_server, self.muzero_server = muzero_server.start_server(self.hparams, logger)
 
-        tensorboard_log_dir = os.path.join(hparams.checkpoints_dir, 'tensorboard_logs')
+        tensorboard_log_dir = os.path.join(self.hparams.checkpoints_dir, 'tensorboard_logs')
         first_run = True
         if os.path.exists(tensorboard_log_dir) and len(os.listdir(tensorboard_log_dir)) > 0:
             first_run = False
@@ -93,11 +96,11 @@ class Trainer:
         self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir)
         self.global_step = 0
 
-        self.inference = networks.Inference(hparams, logger)
+        self.inference = networks.Inference(self.hparams, logger)
 
-        self.representation_opt = torch.optim.Adam(self.inference.representation.parameters(), lr=hparams.init_lr)
-        self.prediction_opt = torch.optim.Adam(self.inference.prediction.parameters(), lr=hparams.init_lr)
-        self.dynamic_opt = torch.optim.Adam(self.inference.dynamic.parameters(), lr=hparams.init_lr)
+        self.representation_opt = torch.optim.Adam(self.inference.representation.parameters(), lr=self.hparams.init_lr)
+        self.prediction_opt = torch.optim.Adam(self.inference.prediction.parameters(), lr=self.hparams.init_lr)
+        self.dynamic_opt = torch.optim.Adam(self.inference.dynamic.parameters(), lr=self.hparams.init_lr)
         self.optimizers = [self.representation_opt, self.prediction_opt, self.dynamic_opt]
 
         self.ce_loss = nn.CrossEntropyLoss(reduction='none')
@@ -285,9 +288,10 @@ class Trainer:
 
         hparams = deepcopy(self.hparams)
         hparams.batch_size = len(self.eval_ds.game_states)
-        train = simulation.Train(hparams, self.inference, self.logger)
+
+        train = simulation.Train(self.game_ctl, self.inference, self.logger, self.summary_writer, 'eval')
         with torch.no_grad():
-            game_states = torch.zeros(hparams.batch_size, *hparams.state_shape).float().to(hparams.device)
+            game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.uint8).to(hparams.device)
             active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
 
             active_game_states = game_states[active_games_index]
@@ -356,23 +360,28 @@ class Trainer:
 
 
 def main():
-    hparams = TicTacToeHparams()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--num_steps', type=int, default=400, help='Number of steps')
+    parser.add_argument('--num_training_steps', type=int, default=40, help='Number of training steps before evaluation')
+    parser.add_argument('--game', type=str, required=True, help='Name of the game')
+    FLAGS = parser.parse_args()
+
+    module = module_loader.GameModule(FLAGS.game, load=True)
 
     epoch = 0
-    hparams.batch_size = 128
-    hparams.num_simulations = 800
-    hparams.num_training_steps = 30
-    hparams.device = torch.device('cuda:0')
+    module.hparams.num_simulations = FLAGS.num_steps
+    module.hparams.num_training_steps = FLAGS.num_training_steps
+    module.hparams.device = torch.device('cuda:0')
 
-    logfile = os.path.join(hparams.checkpoints_dir, 'muzero.log')
-    os.makedirs(hparams.checkpoints_dir, exist_ok=True)
-    logger = setup_logger('muzero', logfile, hparams.log_to_stdout)
+    logfile = os.path.join(module.hparams.checkpoints_dir, 'muzero.log')
+    os.makedirs(module.hparams.checkpoints_dir, exist_ok=True)
+    logger = setup_logger('muzero', logfile, module.hparams.log_to_stdout)
 
     refmoves_fn = 'refmoves1k_kaggle'
-    #eval_ds = EvaluationDataset(refmoves_fn, hparams, logger)
-    eval_ds = None
+    eval_ds = EvaluationDataset(refmoves_fn, module.hparams, logger)
+    #eval_ds = None
 
-    trainer = Trainer(hparams, logger, eval_ds)
+    trainer = Trainer(module, logger, eval_ds)
 
     for epoch in itertools.count():
         trainer.run_training(epoch)

@@ -9,6 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from hparams import GenericHparams as Hparams
 from inference import Inference
+import module_loader
 import mcts
 
 def roll_by_gather(mat, dim, shifts: torch.LongTensor):
@@ -191,27 +192,21 @@ class GameStats:
 
 class Train:
     def __init__(self,
-                 hparams: Hparams,
+                 game_ctl: module_loader.GameModule,
                  inference: Inference,
                  logger: logging.Logger,
                  summary_writer: SummaryWriter,
-                 summary_prefix: str,
-                 step_games: Callable,
-                 invalid_actions_mask: Callable,
-                 game_hparams: NamedTuple):
-        self.hparams = hparams
+                 summary_prefix: str):
+        self.game_ctl = game_ctl
+        self.hparams = game_ctl.hparams
         self.logger = logger
         self.inference = inference
         self.summary_writer = summary_writer
         self.summary_prefix = summary_prefix
         self.summary_step = 0
 
-        self.step_games = step_games
-        self.invalid_actions_mask = invalid_actions_mask
-        self.game_hparams = game_hparams
-
         self.num_train_steps = 0
-        self.game_stats = GameStats(hparams, self.logger)
+        self.game_stats = GameStats(game_ctl.hparams, self.logger)
 
     def run_simulations(self, initial_player_id: torch.Tensor, initial_game_states: torch.Tensor):
         start_simulation_time = perf_counter()
@@ -237,7 +232,7 @@ class Train:
             children_index = tree.children_index(batch_index, node_index)
             tree.add_exploration_noise(batch_index, children_index, self.hparams.exploration_fraction)
 
-        invalid_actions_mask = self.invalid_actions_mask(self.game_hparams, initial_game_states)
+        invalid_actions_mask = self.game_ctl.invalid_actions_mask(self.game_ctl.game_hparams, initial_game_states)
 
         for _ in range(self.hparams.num_simulations):
             search_path, episode_len = tree.run_one_simulation(initial_player_id, invalid_actions_mask)
@@ -258,7 +253,7 @@ class Train:
         children_visits = children_visit_counts / children_sum_visits.unsqueeze(1)
         root_values = tree.value(batch_index, node_index.unsqueeze(1)).squeeze(1)
 
-        if self.num_train_steps >= 6:
+        if self.num_train_steps >= 30:
             actions = torch.argmax(children_visit_counts, 1)
         else:
             temperature = 1.0 # play according to softmax distribution
@@ -292,7 +287,7 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int):
         active_game_states = game_states[active_games_index]
         active_player_ids = player_ids[active_games_index]
         actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
-        new_game_states, rewards, dones = train.step_games(train.game_hparams, active_game_states, active_player_ids, actions)
+        new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
         game_states[active_games_index] = new_game_states.detach().clone()
 
         train.game_stats.append(active_games_index, {

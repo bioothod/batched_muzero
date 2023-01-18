@@ -5,7 +5,7 @@ import logging
 import os
 import pickle
 import time
-from tictactoe_impl import step_games
+from module_loader import GameModule
 
 import torch
 import torch.multiprocessing as mp
@@ -17,11 +17,10 @@ import muzero_pb2
 import muzero_pb2_grpc
 
 from hparams import GenericHparams as Hparams
-from hparams import *
 from logger import setup_logger
+import module_loader
 from networks import Inference
 import simulation
-import tictactoe_impl
 
 def fix(map_loc):
     # Closure rather than a lambda to preserve map_loc
@@ -46,22 +45,22 @@ def mapped_loads(s, map_location='cpu'):
     return unpickler.load()
 
 class MuzeroCollectionClient:
-    def __init__(self, client_id: str, hparams: Hparams, logger: logging.Logger):
+    def __init__(self, client_id: str, game_ctl: GameModule, logger: logging.Logger):
         self.logger = logger
-        self.hparams = hparams
+        self.game_ctl = game_ctl
         self.client_id = client_id
 
         options = (
             ('grpc.max_send_message_length', -1),
             ('grpc.max_receive_message_length', -1),
         )
-        self.channel = grpc.insecure_channel(target=f'localhost:{hparams.server_port}', options=options)
+        self.channel = grpc.insecure_channel(target=f'localhost:{self.game_ctl.hparams.server_port}', options=options)
         self.stub = muzero_pb2_grpc.MuzeroStub(self.channel)
 
         self.generation = -1
 
-        self.inference = Inference(hparams, logger)
-        tensorboard_log_dir = os.path.join(hparams.checkpoints_dir, 'tensorboard_logs')
+        self.inference = Inference(self.game_ctl.hparams, logger)
+        tensorboard_log_dir = os.path.join(self.game_ctl.hparams.checkpoints_dir, 'tensorboard_logs')
         self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir)
 
 
@@ -77,15 +76,15 @@ class MuzeroCollectionClient:
             self.generation = resp.generation
 
     def load_weights(self, weights):
-        checkpoint = mapped_loads(weights, map_location=self.hparams.device)
+        checkpoint = mapped_loads(weights, map_location=self.game_ctl.hparams.device)
 
         self.inference.representation.load_state_dict(checkpoint['representation_state_dict'])
         self.inference.prediction.load_state_dict(checkpoint['prediction_state_dict'])
         self.inference.dynamic.load_state_dict(checkpoint['dynamic_state_dict'])
 
     def send_game_stats(self, game_stats: simulation.GameStats):
-        game_stats = [game_stats]
-        meta = pickle.dumps(game_stats)
+        game_stats_list = [game_stats]
+        meta = pickle.dumps(game_stats_list)
 
         resp = self.stub.SendGameStats(muzero_pb2.GameStats(
             generation=self.generation,
@@ -104,12 +103,8 @@ class MuzeroCollectionClient:
 
             self.inference.train(False)
 
-            step_games = tictactoe_impl.step_games
-            invalid_actions_mask = tictactoe_impl.invalid_actions_mask
-            game_hparams = tictactoe_impl.Hparams()
-
-            train = simulation.Train(self.hparams, self.inference, self.logger, self.summary_writer, f'simulation/{self.client_id}', step_games, invalid_actions_mask, game_hparams)
-            game_stats = simulation.run_single_game(self.hparams, train, num_steps=-1)
+            train = simulation.Train(self.game_ctl, self.inference, self.logger, self.summary_writer, f'simulation/{self.client_id}')
+            game_stats = simulation.run_single_game(self.game_ctl.hparams, train, num_steps=-1)
 
             collection_time = perf_counter() - start_time
             self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.generation)
@@ -144,13 +139,14 @@ class MuzeroCollectionClient:
 
             self.send_game_stats(game_stats)
 
-def run_process(client_id: str, hparams: Hparams):
-    logfile = os.path.join(hparams.checkpoints_dir, f'{client_id}.log')
+def run_process(client_id: str, module: GameModule):
+    logfile = os.path.join(module.hparams.checkpoints_dir, f'{client_id}.log')
     logger = setup_logger(client_id, logfile, True)
 
     #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
-    client = MuzeroCollectionClient(client_id, hparams, logger)
+    module.load()
+    client = MuzeroCollectionClient(client_id, module, logger)
     while True:
         client.collect_episode()
 
@@ -161,19 +157,22 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--start_id', type=int, default=0, help='Initial id for the clients')
     parser.add_argument('--num_clients', type=int, default=2, help='Number of clients to start')
+    parser.add_argument('--num_steps', type=int, default=400, help='Number of steps')
+    parser.add_argument('--batch_size', type=int, default=1024, help='Simulation batch size')
+    parser.add_argument('--game', type=str, required=True, help='Name of the game')
     FLAGS = parser.parse_args()
 
-    hparams = TicTacToeHparams()
-    hparams.batch_size = 1024*4
-    hparams.num_simulations = 200
-    hparams.device = 'cuda:0'
+    module = module_loader.GameModule(FLAGS.game, load=False)
+    module.hparams.batch_size = FLAGS.batch_size
+    module.hparams.num_simulations = FLAGS.num_steps
+    module.hparams.device = 'cuda:0'
 
     mp.set_start_method('spawn')
 
     processes = []
     for cid in range(FLAGS.start_id, FLAGS.start_id+FLAGS.num_clients):
         client_id = f'client{cid}'
-        p = mp.Process(target=run_process, args=(client_id, hparams))
+        p = mp.Process(target=run_process, args=(client_id, module))
         p.start()
         processes.append(p)
 

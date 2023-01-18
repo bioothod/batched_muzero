@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from hparams import GenericHparams
 from inference import Inference as GenericInference
 from inference import NetworkOutput
+import module_loader
 
 class NetworkParams:
     observation_shape: List[int] = []
@@ -305,16 +306,16 @@ class Dynamic(nn.Module):
         return next_state, reward
 
 class Inference(GenericInference):
-    def __init__(self, hparams: GenericHparams, logger: logging.Logger):
+    def __init__(self, game_ctl: module_loader.GameModule, logger: logging.Logger):
         self.logger = logger
-        self.hparams = hparams
+        self.hparams = game_ctl.hparams
+        self.game_name = game_ctl.game_name
 
-        net_hparams = TicTacToeParams(observation_shape=hparams.state_shape, num_actions=hparams.num_actions)
-        self.logger.info(f'inference: network_params:\n{net_hparams}')
+        self.logger.info(f'inference: network_params:\n{game_ctl.game_hparams}')
 
-        self.representation = Representation(net_hparams).to(hparams.device)
-        self.prediction = Prediction(net_hparams).to(hparams.device)
-        self.dynamic = Dynamic(net_hparams).to(hparams.device)
+        self.representation = Representation(game_ctl.game_hparams).to(self.hparams.device)
+        self.prediction = Prediction(game_ctl.game_hparams).to(self.hparams.device)
+        self.dynamic = Dynamic(game_ctl.game_hparams).to(self.hparams.device)
 
         self.models = [self.representation, self.prediction, self.dynamic]
 
@@ -355,8 +356,15 @@ class Inference(GenericInference):
     def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
         batch_size = len(hidden_states)
         actions_exp = F.one_hot(actions, self.hparams.num_actions)
-        actions_exp = actions_exp.view(batch_size, *self.hparams.state_shape)
-        actions_exp = actions_exp.unsqueeze(1)
+        if self.game_name == 'tictactoe':
+            actions_exp = actions_exp.view(batch_size, *self.hparams.state_shape)
+            actions_exp = actions_exp.unsqueeze(1)
+        elif self.game_name == 'connectx':
+            actions_exp = actions_exp.unsqueeze(1)
+            fill = hidden_states.shape[2]
+            actions_exp = actions_exp.tile([1, fill, 1])
+            actions_exp = actions_exp.unsqueeze(1)
+
         inputs = torch.cat([hidden_states, actions_exp], 1)
         new_hidden_states, rewards = self.dynamic(inputs)
         policy_logits, values = self.prediction(new_hidden_states)

@@ -57,7 +57,7 @@ class EvaluationDataset:
                 self.game_player_ids.append(player_id)
 
         self.game_states = torch.stack(self.game_states, 0).to(hparams.device)
-        self.game_player_ids = torch.tensor(self.game_player_ids).long().to(hparams.device)
+        self.game_player_ids = torch.tensor(self.game_player_ids, dtype=torch.uint8).to(hparams.device)
 
         self.ref_best_moves = torch.zeros(len(self.best_moves), num_columns, dtype=torch.float32, device=hparams.device)
         self.ref_good_moves = torch.zeros(len(self.good_moves), num_columns, dtype=torch.float32, device=hparams.device)
