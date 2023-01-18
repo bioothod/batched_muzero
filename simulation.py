@@ -253,7 +253,7 @@ class Train:
         children_visits = children_visit_counts / children_sum_visits.unsqueeze(1)
         root_values = tree.value(batch_index, node_index.unsqueeze(1)).squeeze(1)
 
-        if self.num_train_steps >= 30:
+        if self.num_train_steps >= self.hparams.num_steps_to_argmax_action_selection:
             actions = torch.argmax(children_visit_counts, 1)
         else:
             temperature = 1.0 # play according to softmax distribution
