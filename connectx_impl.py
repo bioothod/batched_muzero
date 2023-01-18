@@ -15,7 +15,12 @@ class Hparams:
         self.invalid_action_reward = -1
 
 @torch.jit.script
+def invalid_actions_mask(hparams: Hparams, games: torch.Tensor):
+    return games[:, 0, :] != 0
+
+@torch.jit.script
 def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor):
+    player_id = player_id.unsqueeze(1)
     row_player = torch.ones([len(games), hparams.inarow], device=games.device) * player_id
     columns_end = hparams.columns - (hparams.inarow - 1)
     rows_end = hparams.rows - (hparams.inarow - 1)
@@ -27,7 +32,6 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor)
         for col in torch.arange(0, columns_end, dtype=torch.int64):
             window = games[idx][:, row, col:col+hparams.inarow]
             win_idx = torch.all(window == row_player[idx], -1)
-            win_idx = torch.any(win_idx, 1)
             dones[idx] = torch.logical_or(dones[idx], win_idx)
             idx = idx[torch.logical_not(win_idx)]
 
@@ -36,7 +40,6 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor)
             for row in torch.arange(0, rows_end, dtype=torch.int64):
                 window = games[idx][:, row:row+hparams.inarow, col]
                 win_idx = torch.all(window == row_player[idx], -1)
-                win_idx = torch.any(win_idx, 1)
                 dones[idx] = torch.logical_or(dones[idx], win_idx)
                 idx = idx[torch.logical_not(win_idx)]
 
@@ -47,7 +50,6 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor)
                 col_index = torch.arange(col, col+hparams.inarow)
                 window = games[idx][:, row_index, col_index]
                 win_idx = torch.all(window == row_player[idx], -1)
-                win_idx = torch.any(win_idx, 1)
                 dones[idx] = torch.logical_or(dones[idx], win_idx)
                 idx = idx[torch.logical_not(win_idx)]
 
@@ -58,20 +60,20 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor)
                 col_index = torch.arange(col, col+hparams.inarow)
                 window = games[idx][:, row_index, col_index]
                 win_idx = torch.all(window == row_player[idx], -1)
-                win_idx = torch.any(win_idx, 1)
                 dones[idx] = torch.logical_or(dones[idx], win_idx)
                 idx = idx[torch.logical_not(win_idx)]
 
-    rewards = torch.where(dones, 1.0, hparams.default_reward)
+    rewards = torch.where(dones, 1.0, hparams.default_reward).type(torch.bfloat16)
 
     return rewards, dones
 
 @torch.jit.script
 def step_games(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor):
-    player_id = player_id.unsqueeze(1).float()
+    actions = actions.long()
 
     num_games = len(games)
-    non_zero = torch.count_nonzero(games[torch.arange(num_games, dtype=torch.int64), :, actions], 2).squeeze(1)
+    games_after_actions = games[torch.arange(num_games, dtype=torch.int64), :, actions]
+    non_zero = torch.count_nonzero(games_after_actions, 1)
 
     invalid_action_index_batch = non_zero == hparams.rows
     good_action_index_batch = non_zero < hparams.rows
@@ -80,7 +82,11 @@ def step_games(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor, a
     games[good_action_index_batch, hparams.rows - non_zero[good_action_index_batch] - 1, good_actions_index] = player_id[good_action_index_batch]
 
     rewards, dones = check_reward(hparams, games, player_id)
-    rewards[invalid_action_index_batch] = torch.tensor(hparams.invalid_action_reward, dtype=torch.float32)
+    rewards[invalid_action_index_batch] = torch.tensor(hparams.invalid_action_reward, dtype=torch.bfloat16)
     dones[invalid_action_index_batch] = True
+
+    num_zeros = torch.count_nonzero(games[:, 0, :] == 0, -1)
+    finished_index = num_zeros == 0
+    dones[finished_index] = True
 
     return games, rewards, dones
