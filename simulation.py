@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Callable, Dict, NamedTuple
 
 import logging
 
@@ -7,8 +7,6 @@ from time import perf_counter
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-#import connectx_impl
-import tictactoe_impl
 from hparams import GenericHparams as Hparams
 from inference import Inference
 import mcts
@@ -192,13 +190,25 @@ class GameStats:
 
 
 class Train:
-    def __init__(self, hparams: Hparams, inference: Inference, logger: logging.Logger, summary_writer: SummaryWriter, summary_prefix: str):
+    def __init__(self,
+                 hparams: Hparams,
+                 inference: Inference,
+                 logger: logging.Logger,
+                 summary_writer: SummaryWriter,
+                 summary_prefix: str,
+                 step_games: Callable,
+                 invalid_actions_mask: Callable,
+                 game_hparams: NamedTuple):
         self.hparams = hparams
         self.logger = logger
         self.inference = inference
         self.summary_writer = summary_writer
         self.summary_prefix = summary_prefix
         self.summary_step = 0
+
+        self.step_games = step_games
+        self.invalid_actions_mask = invalid_actions_mask
+        self.game_hparams = game_hparams
 
         self.num_train_steps = 0
         self.game_stats = GameStats(hparams, self.logger)
@@ -227,8 +237,10 @@ class Train:
             children_index = tree.children_index(batch_index, node_index)
             tree.add_exploration_noise(batch_index, children_index, self.hparams.exploration_fraction)
 
+        invalid_actions_mask = self.invalid_actions_mask(self.game_hparams, initial_game_states)
+
         for _ in range(self.hparams.num_simulations):
-            search_path, episode_len = tree.run_one_simulation(initial_player_id)
+            search_path, episode_len = tree.run_one_simulation(initial_player_id, invalid_actions_mask)
 
         simulation_time = perf_counter() - start_simulation_time
         one_sim_ms = int(simulation_time / self.hparams.num_simulations * 1000)
@@ -271,8 +283,6 @@ class Train:
         self.num_train_steps += 1
 
 def run_single_game(hparams: Hparams, train: Train, num_steps: int):
-    #game_hparams = connectx_impl.Hparams()
-    game_hparams = tictactoe_impl.Hparams()
     game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.uint8).to(hparams.device)
     player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.uint8) * hparams.player_ids[0]
 
@@ -282,8 +292,7 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int):
         active_game_states = game_states[active_games_index]
         active_player_ids = player_ids[active_games_index]
         actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
-        #new_game_states, rewards, dones = connectx_impl.step_games(game_hparams, active_game_states, active_player_ids, actions)
-        new_game_states, rewards, dones = tictactoe_impl.step_games(game_hparams, active_game_states, active_player_ids, actions)
+        new_game_states, rewards, dones = train.step_games(train.game_hparams, active_game_states, active_player_ids, actions)
         game_states[active_games_index] = new_game_states.detach().clone()
 
         train.game_stats.append(active_games_index, {

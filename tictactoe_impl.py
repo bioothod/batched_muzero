@@ -14,6 +14,13 @@ class Hparams:
         self.default_reward = 0
         self.invalid_action_reward = -10
 
+
+@torch.jit.script
+def invalid_actions_mask(hparams: Hparams, games: torch.Tensor):
+    batch_size = len(games)
+    flat_games = games.view(batch_size, -1)
+    return flat_games != 0
+
 @torch.jit.script
 def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor):
     player_id = player_id.unsqueeze(1).unsqueeze(1)

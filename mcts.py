@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Callable, Dict
 
 import logging
 
@@ -189,7 +189,7 @@ class Tree:
         #                  f'priors:\n{priors[:max_debug]}\n'
         #                   f'saved_priors:\n{self.prior.gather(1, children_index)[:max_debug]}\n')
 
-    def select_children(self, depth_index: int, batch_index: torch.Tensor, node_index: torch.Tensor) -> torch.Tensor:
+    def select_children(self, depth_index: int, batch_index: torch.Tensor, node_index: torch.Tensor, invalid_actions_mask: torch.Tensor) -> torch.Tensor:
         max_debug = 10
 
         children_index = self.children_index(batch_index, node_index)
@@ -198,6 +198,7 @@ class Tree:
         ucb_scores = self.ucb_scores(batch_index, node_index, children_index)
         # if depth_index < 2:
         #     self.logger.info(f'depth: {depth_index}, select_children: ucb_scores:\n{ucb_scores[:max_debug]}')
+        ucb_scores[invalid_actions_mask] = float('-inf')
         max_scores, _ = ucb_scores.max(1)
         not_max_indexes = ucb_scores < max_scores.unsqueeze(1)
 
@@ -312,7 +313,7 @@ class Tree:
         hidden_states = torch.stack(hidden_states, 0).to(self.hparams.device)
         return hidden_states
 
-    def run_one_simulation(self, initial_player_id: torch.Tensor):
+    def run_one_simulation(self, initial_player_id: torch.Tensor, invalid_actions_mask: torch.Tensor):
         search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long().to(self.hparams.device)
         actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
         player_id = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len, dtype=torch.uint8).to(self.hparams.device)
@@ -326,7 +327,7 @@ class Tree:
         step_player_id = initial_player_id.detach().clone()
 
         for depth_index in range(0, self.hparams.max_episode_len):
-            action_index, children_index = self.select_children(depth_index, batch_index, node_index)
+            action_index, children_index = self.select_children(depth_index, batch_index, node_index, invalid_actions_mask[batch_index])
 
             # self.logger.info(f'depth: {depth_index}, '
             #                  f'player_id: {player_id[batch_index][:max_debug]}, '

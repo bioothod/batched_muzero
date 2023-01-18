@@ -81,17 +81,17 @@ class TicTacToeParams(NetworkParams):
     kernel_size: int = 3
     hidden_size: int = 16
 
-    repr_conv_res_num_features: int = 24
-    repr_conv_num_blocks: int = 3
+    repr_conv_res_num_features: int = 16
+    repr_conv_num_blocks: int = 2
 
-    pred_conv_res_num_features: int = 24
-    pred_conv_num_blocks: int = 3
-    pred_hidden_linear_layers: List[int] = [128, 128]
+    pred_conv_res_num_features: int = 16
+    pred_conv_num_blocks: int = 2
+    pred_hidden_linear_layers: List[int] = [64, 64]
     num_actions: int = 9
 
-    dyn_conv_res_num_features: int = 24
-    dyn_conv_num_blocks: int = 3
-    dyn_reward_linear_layers: List[int] = [128, 128]
+    dyn_conv_res_num_features: int = 16
+    dyn_conv_num_blocks: int = 2
+    dyn_reward_linear_layers: List[int] = [64, 64]
 
     activation_str: str = 'LeakyReLU'
     activation_args: List = []

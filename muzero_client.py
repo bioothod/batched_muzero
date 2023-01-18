@@ -5,6 +5,7 @@ import logging
 import os
 import pickle
 import time
+from tictactoe_impl import step_games
 
 import torch
 import torch.multiprocessing as mp
@@ -20,6 +21,7 @@ from hparams import *
 from logger import setup_logger
 from networks import Inference
 import simulation
+import tictactoe_impl
 
 def fix(map_loc):
     # Closure rather than a lambda to preserve map_loc
@@ -102,7 +104,11 @@ class MuzeroCollectionClient:
 
             self.inference.train(False)
 
-            train = simulation.Train(self.hparams, self.inference, self.logger, self.summary_writer, f'simulation/{self.client_id}')
+            step_games = tictactoe_impl.step_games
+            invalid_actions_mask = tictactoe_impl.invalid_actions_mask
+            game_hparams = tictactoe_impl.Hparams()
+
+            train = simulation.Train(self.hparams, self.inference, self.logger, self.summary_writer, f'simulation/{self.client_id}', step_games, invalid_actions_mask, game_hparams)
             game_stats = simulation.run_single_game(self.hparams, train, num_steps=-1)
 
             collection_time = perf_counter() - start_time
