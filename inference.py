@@ -5,7 +5,7 @@ import logging
 import numpy as np
 import torch
 
-from hparams import GenericHparams as Hparams
+import module_loader
 
 class NetworkOutput:
     reward: torch.Tensor
@@ -24,9 +24,9 @@ class NetworkOutput:
             self.value = torch.zeros_like(reward)
 
 class Inference:
-    def __init__(self, hparams: Hparams, logger: logging.Logger):
+    def __init__(self, game_ctl: module_loader.GameModule, logger: logging.Logger):
         self.logger = logger
-        self.hparams = hparams
+        self.hparams = game_ctl.hparams
 
     def train(self, mode: bool):
         raise NotImplementedError(f'@train() method is not implemented')
