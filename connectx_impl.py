@@ -63,7 +63,7 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor)
                 dones[idx] = torch.logical_or(dones[idx], win_idx)
                 idx = idx[torch.logical_not(win_idx)]
 
-    rewards = torch.where(dones, 1.0, hparams.default_reward).type(torch.bfloat16)
+    rewards = torch.where(dones, 1.0, hparams.default_reward)
 
     return rewards, dones
 
@@ -82,7 +82,7 @@ def step_games(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor, a
     games[good_action_index_batch, hparams.rows - non_zero[good_action_index_batch] - 1, good_actions_index] = player_id[good_action_index_batch]
 
     rewards, dones = check_reward(hparams, games, player_id)
-    rewards[invalid_action_index_batch] = torch.tensor(hparams.invalid_action_reward, dtype=torch.bfloat16)
+    rewards[invalid_action_index_batch] = torch.tensor(hparams.invalid_action_reward, dtype=torch.float32)
     dones[invalid_action_index_batch] = True
 
     num_zeros = torch.count_nonzero(games[:, 0, :] == 0, -1)

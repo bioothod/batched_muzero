@@ -40,9 +40,9 @@ class GameStats:
         self.hparams = hparams
 
         self.episode_len = torch.zeros(hparams.batch_size, dtype=torch.uint8, device=hparams.device)
-        self.rewards = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.bfloat16, device=hparams.device)
-        self.root_values = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.bfloat16, device=hparams.device)
-        self.children_visits = torch.zeros(hparams.batch_size, hparams.num_actions, hparams.max_episode_len, dtype=torch.bfloat16, device=hparams.device)
+        self.rewards = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
+        self.root_values = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
+        self.children_visits = torch.zeros(hparams.batch_size, hparams.num_actions, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
         self.actions = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.uint8, device=hparams.device)
         self.player_ids = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.uint8, device=hparams.device)
         self.dones = torch.zeros(hparams.batch_size, dtype=torch.bool, device=hparams.device)
@@ -224,9 +224,9 @@ class Train:
 
         tree.store_states(search_path, episode_len, out.hidden_state)
 
-        tree.expand(initial_player_id, batch_index, node_index, out.policy_logits.type(torch.bfloat16))
+        tree.expand(initial_player_id, batch_index, node_index, out.policy_logits)
         tree.visit_count[batch_index, node_index] = 1
-        tree.value_sum[batch_index, node_index] += out.value.type(torch.bfloat16)
+        tree.value_sum[batch_index, node_index] += out.value
 
         if self.hparams.add_exploration_noise:
             children_index = tree.children_index(batch_index, node_index)
@@ -263,7 +263,7 @@ class Train:
             actions = actions.squeeze(1)
 
         actions = actions.type(torch.uint8)
-        children_visits = children_visits.type(torch.bfloat16)
+        children_visits = children_visits
         # max_debug = 10
         # self.logger.info(f'train_steps: {self.num_train_steps}, '
         #                  f'children_index:\n{children_index[:max_debug]}\n'

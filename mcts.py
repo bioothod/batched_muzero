@@ -104,9 +104,9 @@ class Tree:
 
         self.saved_children_index = torch.zeros([self.hparams.batch_size, max_size]).long().to(hparams.device)
         self.visit_count = torch.zeros([self.hparams.batch_size, max_size]).long().to(hparams.device)
-        self.value_sum = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.bfloat16).to(hparams.device)
-        self.prior = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.bfloat16).to(hparams.device)
-        self.reward = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.bfloat16).to(hparams.device)
+        self.value_sum = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.float32).to(hparams.device)
+        self.prior = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.float32).to(hparams.device)
+        self.reward = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.float32).to(hparams.device)
         self.expanded = torch.zeros([self.hparams.batch_size, max_size]).bool().to(hparams.device)
         self.player_id = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.uint8).to(hparams.device)
         self.player_id[:, 0] = player_id.detach().clone().to(self.hparams.device)
@@ -381,9 +381,9 @@ class Tree:
             # self.logger.info(f'episode_len: {episode_len[:max_debug]}')
             # self.logger.info(f'parent_index: {parent_index[:max_debug]}')
 
-            self.expand(last_player_id, batch_index, parent_index, out.policy_logits.type(torch.bfloat16))
+            self.expand(last_player_id, batch_index, parent_index, out.policy_logits)
 
-            self.backpropagate(player_id, search_path, episode_len, out.value.type(torch.bfloat16))
+            self.backpropagate(player_id, search_path, episode_len, out.value)
         except:
             # self.logger.error(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()+1]}')
             # self.logger.error(f'actions: {actions.shape}\n{actions[:max_debug, :episode_len.max()]}')
