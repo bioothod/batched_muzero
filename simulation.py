@@ -240,12 +240,6 @@ class Train:
         simulation_time = perf_counter() - start_simulation_time
         one_sim_ms = int(simulation_time / self.hparams.num_simulations * 1000)
 
-        # self.logger.info(f'train: {self.num_train_steps:2d}: '
-        #              f'batch_size: {batch_size}, '
-        #              f'num_simulations: {self.hparams.num_simulations}, '
-        #              f'time: {simulation_time:.3f} sec, '
-        #              f'one_sim: {one_sim_ms:3d} ms')
-
         node_index = torch.zeros(batch_size).long().to(self.hparams.device)
         children_index = tree.children_index(batch_index, node_index)
         children_visit_counts = tree.visit_count[batch_index].gather(1, children_index).float()
@@ -300,6 +294,17 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int):
             'player_ids': active_player_ids,
         })
         train.update_train_steps()
+
+        # max_debug = 10
+        # train.logger.info(f'game:\n{game_states[0].detach().cpu().numpy().astype(int)}\n'
+        #                   f'actions:\n{actions[:max_debug]}\n'
+        #                   f'children_visits:\n{children_visits[:max_debug]}\n'
+        #                   f'root_values:\n{root_values[:max_debug]}\n'
+        #                   f'rewards:\n{rewards[:max_debug]}\n'
+        #                   f'dones:\n{dones[:max_debug]}\n'
+        #                   f'player_ids:\n{player_ids[:max_debug]}\n'
+        #                   f'active_game_index:\n{active_games_index[:max_debug]}'
+        #                   )
 
         if dones.sum() == len(dones):
             break
