@@ -320,7 +320,7 @@ class Tree:
         hidden_states = torch.stack(hidden_states, 0).to(self.hparams.device)
         return hidden_states
 
-    def run_one_simulation(self, initial_player_id: torch.Tensor, initial_game_states: torch.Tensor, invalid_actions_mask: torch.Tensor):
+    def run_one_simulation(self, initial_player_id: torch.Tensor, invalid_actions_mask: torch.Tensor):
         search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long().to(self.hparams.device)
         actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
         player_id = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len, dtype=torch.uint8).to(self.hparams.device)
@@ -333,7 +333,6 @@ class Tree:
         search_path[batch_index, 0] = node_index
         step_player_id = initial_player_id.detach().clone()
         invalid_actions_mask = invalid_actions_mask.detach().clone()
-        new_game_state = initial_game_states.detach().clone()
 
         for depth_index in range(0, self.hparams.max_episode_len):
             action_index, children_index = self.select_children(depth_index, batch_index, node_index, invalid_actions_mask[batch_index])
@@ -346,8 +345,6 @@ class Tree:
             #                  f'action_index: {action_index[:max_debug]}, '
             #                  f'children_index: {children_index.shape}, '
             #                  f'children_index: {children_index[:max_debug]}')
-
-            #self.logger.info('game:\n{initial_game_states[:max_debug]}\n{new_game_states[:max_debug]}')
 
             search_path[batch_index, depth_index+1] = children_index.detach().clone()
             actions[batch_index, depth_index] = action_index.detach().clone()
