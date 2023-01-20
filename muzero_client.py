@@ -59,7 +59,7 @@ class MuzeroCollectionClient:
 
         self.generation = -1
 
-        self.inference = Inference(self.game_ctl.hparams, logger)
+        self.inference = Inference(self.game_ctl, logger)
         tensorboard_log_dir = os.path.join(self.game_ctl.hparams.checkpoints_dir, 'tensorboard_logs')
         self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir)
 
@@ -107,37 +107,43 @@ class MuzeroCollectionClient:
             game_stats = simulation.run_single_game(self.game_ctl.hparams, train, num_steps=-1)
 
             collection_time = perf_counter() - start_time
-            self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.generation)
-
-            for i in range(4):
-                valid_index = game_stats.episode_len > i
-                children_visits = game_stats.children_visits[valid_index, :, i].float()
-                actions = game_stats.actions[valid_index, i]
-
-                if len(children_visits) > 0:
-                    self.summary_writer.add_histogram(f'collect/{self.client_id}/children_visits{i}', children_visits, self.generation)
-                    self.summary_writer.add_histogram(f'collect/{self.client_id}/actions{i}', actions, self.generation)
-
-            self.summary_writer.add_scalar(f'collect/{self.client_id}/root_values', game_stats.root_values[:, 0].float().mean(), self.generation)
-
-            episode_rewards = game_stats.rewards.float().sum(1)
-            self.summary_writer.add_histogram(f'collect/{self.client_id}/rewards', episode_rewards, self.generation, bins=3)
-            self.summary_writer.add_scalar(f'collect/{self.client_id}/mean_reward', episode_rewards.mean(), self.generation)
-            self.summary_writer.add_scalars(f'collect/{self.client_id}/results', {
-                'wins': (episode_rewards > 0).sum() / len(episode_rewards),
-                'looses': (episode_rewards < 0).sum() / len(episode_rewards),
-                'draws': (episode_rewards == 0).sum() / len(episode_rewards),
-            }, self.generation)
-
-            self.summary_writer.add_histogram(f'collect/{self.client_id}/train_steps', game_stats.episode_len, self.generation)
-            self.summary_writer.add_scalars(f'collect/{self.client_id}/train_steps', {
-                'min': game_stats.episode_len.min(),
-                'max': game_stats.episode_len.max(),
-                'mean': game_stats.episode_len.float().mean(),
-                'median': game_stats.episode_len.float().median(),
-            }, self.generation)
 
             self.send_game_stats(game_stats)
+            if self.generation == 0:
+                time.sleep(1)
+
+
+            if self.client_id == "client0":
+                self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.generation)
+
+                for i in range(4):
+                    valid_index = game_stats.episode_len > i
+                    children_visits = game_stats.children_visits[valid_index, :, i].float()
+                    actions = game_stats.actions[valid_index, i]
+
+                    if len(children_visits) > 0:
+                        children_visits = {str(action):children_visits[:, action].mean(0) for action in range(children_visits.shape[-1])}
+                        self.summary_writer.add_scalars(f'collect/{self.client_id}/children_visits{i}', children_visits, self.generation)
+                        self.summary_writer.add_histogram(f'collect/{self.client_id}/actions{i}', actions, self.generation)
+
+                self.summary_writer.add_scalar(f'collect/{self.client_id}/root_values', game_stats.root_values[:, 0].float().mean(), self.generation)
+
+                episode_rewards = game_stats.rewards.float().sum(1)
+                self.summary_writer.add_histogram(f'collect/{self.client_id}/rewards', episode_rewards, self.generation, bins=3)
+                self.summary_writer.add_scalar(f'collect/{self.client_id}/mean_reward', episode_rewards.mean(), self.generation)
+                self.summary_writer.add_scalars(f'collect/{self.client_id}/results', {
+                    'wins': (episode_rewards > 0).sum() / len(episode_rewards),
+                    'looses': (episode_rewards < 0).sum() / len(episode_rewards),
+                    'draws': (episode_rewards == 0).sum() / len(episode_rewards),
+                }, self.generation)
+
+                self.summary_writer.add_histogram(f'collect/{self.client_id}/train_steps', game_stats.episode_len, self.generation)
+                self.summary_writer.add_scalars(f'collect/{self.client_id}/train_steps', {
+                    'min': game_stats.episode_len.min(),
+                    'max': game_stats.episode_len.max(),
+                    'mean': game_stats.episode_len.float().mean(),
+                    'median': game_stats.episode_len.float().median(),
+                }, self.generation)
 
 def run_process(client_id: str, module: GameModule):
     logfile = os.path.join(module.hparams.checkpoints_dir, f'{client_id}.log')
