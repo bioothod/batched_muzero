@@ -96,7 +96,7 @@ class Trainer:
         self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir)
         self.global_step = 0
 
-        self.inference = networks.Inference(self.hparams, logger)
+        self.inference = networks.Inference(self.game_ctl, logger)
 
         self.representation_opt = torch.optim.Adam(self.inference.representation.parameters(), lr=self.hparams.init_lr)
         self.prediction_opt = torch.optim.Adam(self.inference.prediction.parameters(), lr=self.hparams.init_lr)
@@ -378,8 +378,10 @@ def main():
     logger = setup_logger('muzero', logfile, module.hparams.log_to_stdout)
 
     refmoves_fn = 'refmoves1k_kaggle'
-    eval_ds = EvaluationDataset(refmoves_fn, module.hparams, logger)
-    #eval_ds = None
+    if FLAGS.game == 'connectx':
+        eval_ds = EvaluationDataset(refmoves_fn, module.hparams, logger)
+    else:
+        eval_ds = None
 
     trainer = Trainer(module, logger, eval_ds)
 
