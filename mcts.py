@@ -332,7 +332,7 @@ class Tree:
 
         search_path[batch_index, 0] = node_index
         step_player_id = initial_player_id.detach().clone()
-        invalid_actions_mask = invalid_actions_mask.detach().clone()
+        invalid_actions_mask = invalid_actions_mask.detach().clone().to(self.hparams.device)
 
         for depth_index in range(0, self.hparams.max_episode_len):
             action_index, children_index = self.select_children(depth_index, batch_index, node_index, invalid_actions_mask[batch_index])
@@ -349,7 +349,7 @@ class Tree:
             search_path[batch_index, depth_index+1] = children_index.detach().clone()
             actions[batch_index, depth_index] = action_index.detach().clone()
             episode_len[batch_index] += 1
-            invalid_actions_mask[batch_index, action_index] = 1
+            invalid_actions_mask[batch_index, action_index] = True
             player_id[batch_index, depth_index] = step_player_id[batch_index].detach().clone()
 
 
