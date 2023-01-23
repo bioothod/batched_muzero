@@ -117,6 +117,10 @@ class GameStats:
 
         self.episode_len[index] += 1
 
+    def update_last_rewards(self, win_index: torch.Tensor):
+        episode_len = self.episode_len[win_index].long()
+        self.rewards[win_index, episode_len-1] = -1
+
     def make_target(self, start_index: torch.Tensor) -> List[TrainElement]:
         target_values = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
         target_last_rewards = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
@@ -311,6 +315,9 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int):
         actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
         new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
         game_states[active_games_index] = new_game_states.detach().clone()
+
+        win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
+        train.game_stats.update_last_rewards(win_index)
 
         train.game_stats.append(active_games_index, {
             'children_visits': children_visits,
