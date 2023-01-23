@@ -114,8 +114,6 @@ class MuzeroCollectionClient:
 
 
             if self.client_id == "client0":
-                self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.generation)
-
                 for i in range(4):
                     valid_index = game_stats.episode_len > i
                     children_visits = game_stats.children_visits[valid_index, :, i].float()
@@ -144,6 +142,8 @@ class MuzeroCollectionClient:
                     'mean': game_stats.episode_len.float().mean(),
                     'median': game_stats.episode_len.float().median(),
                 }, self.generation)
+
+                self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.generation)
 
 def run_process(client_id: str, module: GameModule):
     logfile = os.path.join(module.hparams.checkpoints_dir, f'{client_id}.log')
