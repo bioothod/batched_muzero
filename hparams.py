@@ -38,12 +38,12 @@ class GenericHparams:
 
     num_steps_to_argmax_action_selection: int
 
-    max_training_games: int = 50
+    max_training_games: int = 100
 
     server_port: int = 50051
     num_server_workers: int = 2
 
-    num_training_steps: int = 10
+    num_training_steps: int = 64
     min_lr = 1e-5
     init_lr = 1e-4
 

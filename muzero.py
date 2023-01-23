@@ -1,6 +1,7 @@
 from typing import Dict, List, Optional
 
 import argparse
+import dataclasses
 import itertools
 import logging
 import pickle
@@ -12,6 +13,7 @@ from copy import deepcopy
 from time import perf_counter
 
 import numpy as np
+from replay_buffer import ReplayBuffer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -27,55 +29,22 @@ import muzero_server
 import networks
 import simulation
 
-class Sample:
-    num_steps: int
-    player_id: int
-    initial_game_state: torch.Tensor
-
-    children_visits: torch.Tensor
-    values: torch.Tensor
-    last_rewards: torch.Tensor
-
-    actions: torch.Tensor
-
-class SampleDataset:
-    def __init__(self, hparams: Hparams):
-        self.samples = []
-
-        self.num_unroll_steps = hparams.num_unroll_steps
-
-    def __len__(self):
-        return len(self.samples)
-
-    def append(self, sample_dict: Dict[str, torch.Tensor]):
-        game_states = sample_dict['game_states']
-        actions = sample_dict['actions']
-        episode_len = sample_dict['actions']
-        values = sample_dict['values']
-        last_rewards = sample_dict['last_rewards']
-        children_visits = sample_dict['children_visits']
-        player_ids = sample_dict['player_ids']
-
-        for sample_idx in range(len(game_states)):
-            s = Sample()
-
-            s.num_steps = episode_len[sample_idx]
-            s.player_id = player_ids[sample_idx]
-            s.initial_game_state = game_states[sample_idx]
-
-            s.children_visits = children_visits[sample_idx]
-            s.values = values[sample_idx]
-            s.last_rewards = last_rewards[sample_idx]
-            s.actions = actions[sample_idx]
-
-            self.samples.append(s)
-
-    def __getitem__(self, index):
-        s = self.samples[index]
-
 def scale_gradient(tensor: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return tensor * scale + tensor.detach() * (1 - scale)
     #return tensor
+
+def train_element_collate_fn(samples: List[simulation.TrainElement]):
+    collated_dict = defaultdict(list)
+    for sample in samples:
+        sample = dataclasses.asdict(sample)
+        for key, value in sample.items():
+            collated_dict[key].append(value)
+
+    converted_dict = {}
+    for key, list_value in collated_dict.items():
+        converted_dict[key] = torch.stack(list_value, 0)
+
+    return simulation.TrainElement(**converted_dict)
 
 class Trainer:
     def __init__(self, game_ctl: module_loader.GameModule, logger: logging.Logger, eval_ds: Optional[EvaluationDataset]):
@@ -86,7 +55,9 @@ class Trainer:
 
         self.max_best_score = None
 
-        self.grpc_server, self.muzero_server = muzero_server.start_server(self.hparams, logger)
+        self.replay_buffer = ReplayBuffer(self.hparams)
+
+        self.grpc_server, self.muzero_server = muzero_server.start_server(self.hparams, self.replay_buffer, logger)
 
         tensorboard_log_dir = os.path.join(self.hparams.checkpoints_dir, 'tensorboard_logs')
         first_run = True
@@ -111,48 +82,27 @@ class Trainer:
         self.try_load()
         self.save_muzero_server_weights()
 
+    def save_muzero_server_weights(self):
+        save_dict = {
+            'representation_state_dict': self.inference.representation.state_dict(),
+            'prediction_state_dict': self.inference.prediction.state_dict(),
+            'dynamic_state_dict': self.inference.dynamic.state_dict(),
+        }
+        meta = pickle.dumps(save_dict)
+
+        self.muzero_server.update_weights(self.global_step, meta)
+
     def close(self):
         self.grpc_server.wait_for_termination()
 
-    def training_forward_one_game(self, epoch: int, game_stat: simulation.GameStats):
-        start_pos = torch.randint(low=0, high=game_stat.episode_len.max(), size=(len(game_stat.episode_len),)).to(self.hparams.device)
-        start_pos -= self.hparams.num_unroll_steps
-        start_pos = torch.where(start_pos <= 0, 0, start_pos)
-        start_pos = torch.where(start_pos+self.hparams.num_unroll_steps>=game_stat.episode_len, 0, start_pos)
-        #self.logger.info(f'epoch: {epoch}: start_pos: {start_pos.shape}: {start_pos[:10]}, episode_len: {game_stat.episode_len[:10]}')
-
-        self.summary_writer.add_scalars('train/episode_len', {
-            'mean': game_stat.episode_len.float().mean(),
-            'median': game_stat.episode_len.float().median(),
-            'min': game_stat.episode_len.min(),
-            'max': game_stat.episode_len.max(),
-        }, self.global_step)
-
-        sample_dict = game_stat.make_target(start_pos)
-
-        game_states = sample_dict['game_states']
-        actions = sample_dict['actions']
-        sample_len = sample_dict['sample_len']
-        values = sample_dict['values']
-        last_rewards = sample_dict['last_rewards']
-        children_visits = sample_dict['children_visits']
-        player_ids = sample_dict['player_ids']
-
-        invalid_sample_len_index = sample_len == 0
-        if invalid_sample_len_index.sum() > 0:
-            self.logger.error(f'{epoch}: invalid sample_len: number of zeros: {invalid_sample_len_index.sum()}, sample_len:\n{sample_len}\nstart_pos:{start_pos}')
-            self.logger.info(f'game_states: {game_states.shape}, player_ids: {player_ids.shape}, actions: {actions.shape}, children_visits: {children_visits.shape}')
-            exit(-1)
-
-        train_examples = len(game_states)
-
-        out = self.inference.initial(player_ids[:, 0], game_states)
-        policy_loss = self.ce_loss(out.policy_logits, children_visits[:, :, 0])
-        value_loss = self.scalar_loss(out.value, values[:, 0])
+    def training_step(self, epoch: int, sample):
+        out = self.inference.initial(sample.player_ids[:, 0], sample.game_states)
+        policy_loss = self.ce_loss(out.policy_logits, sample.children_visits[:, :, 0])
+        value_loss = self.scalar_loss(out.value, sample.values[:, 0])
         reward_loss = self.scalar_loss(out.reward, out.reward)
 
         iteration_loss = policy_loss + value_loss + reward_loss
-        iteration_loss = scale_gradient(iteration_loss, 1/sample_len)
+        iteration_loss = scale_gradient(iteration_loss, 1/sample.sample_len)
         total_loss = torch.mean(iteration_loss)
 
         self.summary_writer.add_scalars('train/initial_losses', {
@@ -174,13 +124,13 @@ class Trainer:
             f'total_loss: {total_loss.item():.4f}')
 
 
-        for step_idx in range(1, sample_len.max()):
-            batch_index = step_idx < sample_len
-            sample_len = sample_len[batch_index]
-            actions = actions[batch_index]
-            values = values[batch_index]
-            children_visits = children_visits[batch_index]
-            last_rewards = last_rewards[batch_index]
+        for step_idx in range(1, sample.sample_len.max()):
+            batch_index = step_idx < sample.sample_len
+            sample_len = sample.sample_len[batch_index]
+            actions = sample.actions[batch_index]
+            values = sample.values[batch_index]
+            children_visits = sample.children_visits[batch_index]
+            last_rewards = sample.last_rewards[batch_index]
 
             scale = torch.ones(len(last_rewards), device=self.hparams.device)*0.5
             scale = scale.unsqueeze(1).unsqueeze(1).unsqueeze(1)
@@ -197,88 +147,33 @@ class Trainer:
 
             total_loss += torch.mean(iteration_loss)
 
-        return total_loss, train_examples
-
-    def training_step_for_one_game(self, epoch: int, game_stat: simulation.GameStats):
-        self.inference.zero_grad()
-        for opt in self.optimizers:
-            opt.zero_grad()
-
-        total_loss, total_train_examples = self.training_forward_one_game(epoch, game_stat)
-
-        total_loss.backward()
-
-        for opt in self.optimizers:
-            opt.step()
-
-        self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
-        self.summary_writer.add_scalar('train/samples', total_train_examples, self.global_step)
-
-        self.global_step += 1
-        self.save_muzero_server_weights()
-
-    def training_step(self, epoch: int):
-        self.inference.train(True)
-
-        self.move_games()
-        all_keys = sorted(list(self.all_games.keys()))
-        all_games = []
-        for key in all_keys:
-            all_games += self.all_games[key]
-
-        game_stat = np.random.choice(all_games)
-        self.training_step_for_one_game(epoch, game_stat)
-
-    def move_games(self) -> int:
-        new_games = self.muzero_server.move_games()
-        if len(new_games) > 0:
-            for gen, games in new_games.items():
-                self.all_games[gen] += games
-
-        num_games = 0
-        for gen, games in self.all_games.items():
-            num_games += len(games)
-
-        if num_games > self.hparams.max_training_games:
-            to_remove = num_games - self.hparams.max_training_games
-
-            all_keys = sorted(list(self.all_games.keys()))
-            for gen in all_keys:
-                games = self.all_games[gen]
-                if to_remove >= len(games):
-                    to_remove -= len(games)
-                    num_games -= len(games)
-                    del self.all_games[gen]
-                else:
-                    self.all_games[gen] = games[to_remove:]
-                    num_games -= to_remove
-                    to_remove = 0
-                    break
-
-        if num_games > 0:
-            self.summary_writer.add_scalar('train/num_games', num_games, self.global_step)
-
-        return num_games
-
-    def save_muzero_server_weights(self):
-        save_dict = {
-            'representation_state_dict': self.inference.representation.state_dict(),
-            'prediction_state_dict': self.inference.prediction.state_dict(),
-            'dynamic_state_dict': self.inference.dynamic.state_dict(),
-        }
-        meta = pickle.dumps(save_dict)
-
-        self.muzero_server.update_weights(self.global_step, meta)
+        return total_loss
 
     def run_training(self, epoch: int):
-        while self.move_games() == 0:
+        while self.replay_buffer.num_games() == 0:
             time.sleep(1)
 
-        for train_idx in range(self.hparams.num_training_steps):
-            self.training_step(epoch)
+        self.inference.train(True)
 
-            if train_idx % 10 == 0:
-                self.run_evaluation(save_if_best=True)
+        samples = self.replay_buffer.sample(batch_size=self.hparams.batch_size*self.hparams.num_training_steps)
+        data_loader = torch.utils.data.DataLoader(samples, batch_size=self.hparams.batch_size, shuffle=True, drop_last=False, collate_fn=train_element_collate_fn)
+
+        for sample in data_loader:
+            self.inference.zero_grad()
+            for opt in self.optimizers:
+                opt.zero_grad()
+
+            total_loss = self.training_step(epoch, sample)
+
+            total_loss.backward()
+
+            for opt in self.optimizers:
+                opt.step()
+
+            self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
+
+            self.global_step += 1
+            self.save_muzero_server_weights()
 
         self.run_evaluation(save_if_best=True)
 

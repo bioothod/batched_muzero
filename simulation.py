@@ -1,7 +1,8 @@
-from typing import Callable, Dict, NamedTuple
+from typing import Dict, List, NamedTuple
 
 import logging
 
+from dataclasses import dataclass
 from time import perf_counter
 
 import torch
@@ -11,6 +12,28 @@ from hparams import GenericHparams as Hparams
 from inference import Inference
 import module_loader
 import mcts
+
+@dataclass
+class TrainElement:
+    values: torch.Tensor
+    last_rewards: torch.Tensor
+    children_visits: torch.Tensor
+    game_states: torch.Tensor
+    actions: torch.Tensor
+    sample_len: torch.Tensor
+    player_ids: torch.Tensor
+
+    @staticmethod
+    def from_dict(sample_dict: Dict[str, torch.Tensor]) -> 'TrainElement':
+        return TrainElement(
+            game_states = sample_dict['game_states'],
+            actions = sample_dict['actions'],
+            sample_len = sample_dict['sample_len'],
+            values = sample_dict['values'],
+            last_rewards = sample_dict['last_rewards'],
+            children_visits = sample_dict['children_visits'],
+            player_ids = sample_dict['player_ids'],
+        )
 
 def roll_by_gather(mat, dim, shifts: torch.LongTensor):
     # assumes 2D array
@@ -94,7 +117,7 @@ class GameStats:
 
         self.episode_len[index] += 1
 
-    def make_target(self, start_index: torch.Tensor):
+    def make_target(self, start_index: torch.Tensor) -> List[TrainElement]:
         target_values = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
         target_last_rewards = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
         target_children_visits = torch.zeros(len(start_index), self.hparams.num_actions, self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
@@ -179,15 +202,20 @@ class GameStats:
             player_ids[valid_index, unroll_index] = self.player_ids[valid_index, current_valid_index].long()
             sample_len[valid_index] += 1
 
-        return {
-            'values': target_values,
-            'last_rewards': target_last_rewards,
-            'children_visits': target_children_visits,
-            'game_states': game_states,
-            'actions': taken_actions,
-            'sample_len': sample_len,
-            'player_ids': player_ids,
-        }
+        samples = []
+        for i in range(len(target_values)):
+            elm = TrainElement(
+                values=target_values[i],
+                last_rewards=target_last_rewards[i],
+                children_visits=target_children_visits[i],
+                game_states=game_states[i],
+                actions=taken_actions[i],
+                sample_len=sample_len[i],
+                player_ids=player_ids[i],
+            )
+            samples.append(elm)
+
+        return samples
 
 
 class Train:
