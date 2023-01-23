@@ -51,19 +51,19 @@ class NetworkParams:
 
 class ConnectXParams(NetworkParams):
     kernel_size: int = 4
-    hidden_size: int = 24
+    hidden_size: int = 16
 
     repr_conv_res_num_features: int = 24
     repr_conv_num_blocks: int = 4
 
     pred_conv_res_num_features: int = 24
     pred_conv_num_blocks: int = 2
-    pred_hidden_linear_layers: List[int] = [256, 256]
+    pred_hidden_linear_layers: List[int] = [128, 128]
     num_actions: int = 0
 
     dyn_conv_res_num_features: int = 24
     dyn_conv_num_blocks: int = 4
-    dyn_reward_linear_layers: List[int] = [256, 256]
+    dyn_reward_linear_layers: List[int] = [128, 128]
 
     activation_str: str = 'LeakyReLU'
     activation_args: List = []
