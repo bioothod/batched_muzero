@@ -111,21 +111,10 @@ class Trainer:
                 'total': total_loss,
         }, self.global_step)
 
-        #policy_softmax = F.log_softmax(out.policy_logits, 1)
-
-        #self.logger.info(f'children_visits:\n{children_visits[:5, :, 0]}, policy_logits:\n{out.policy_logits[:5]}\npolicy_softmax:\n{policy_softmax[:5]}\npolicy_loss:\n{policy_loss[:5]}\nactions:\n{actions[:5, 0]}')
-        #logger.info(f'values:\n{values[:5, 0]}\nout.value:\n{out.value[:5]}\nvalue_loss: {value_loss[:5]}')
-
-        if False:
-            self.logger.info(f'{epoch:3d}: '
-            f'policy_loss: {policy_loss.mean().item():.4f}, '
-            f'value_loss: {value_loss.mean().item():.4f}, '
-            f'reward_loss: {reward_loss.mean().item():.4f}, '
-            f'total_loss: {total_loss.item():.4f}')
-
-
+        batch_index = torch.arange(len(sample.player_ids))
         for step_idx in range(1, sample.sample_len.max()):
-            batch_index = step_idx < sample.sample_len
+            len_idx = step_idx < sample.sample_len[batch_index]
+            batch_index = batch_index[len_idx]
             sample_len = sample.sample_len[batch_index]
             actions = sample.actions[batch_index]
             values = sample.values[batch_index]
@@ -134,7 +123,7 @@ class Trainer:
 
             scale = torch.ones(len(last_rewards), device=self.hparams.device)*0.5
             scale = scale.unsqueeze(1).unsqueeze(1).unsqueeze(1)
-            hidden_states = scale_gradient(out.hidden_state[batch_index], scale)
+            hidden_states = scale_gradient(out.hidden_state[len_idx], scale)
 
             out = self.inference.recurrent(hidden_states, actions[:, step_idx-1])
 
@@ -260,6 +249,8 @@ def main():
     parser.add_argument('--num_training_steps', type=int, default=40, help='Number of training steps before evaluation')
     parser.add_argument('--game', type=str, required=True, help='Name of the game')
     FLAGS = parser.parse_args()
+
+    #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
     module = module_loader.GameModule(FLAGS.game, load=True)
 

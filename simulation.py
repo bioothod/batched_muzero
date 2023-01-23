@@ -238,7 +238,7 @@ class Train:
         self.summary_step = 0
 
         self.num_train_steps = 0
-        self.game_stats = GameStats(game_ctl.hparams, self.logger)
+        self.game_stats = {player_id:GameStats(game_ctl.hparams, self.logger) for player_id in self.hparams.player_ids}
 
     def run_simulations(self, initial_player_id: torch.Tensor, initial_game_states: torch.Tensor):
         start_simulation_time = perf_counter()
@@ -303,7 +303,7 @@ class Train:
     def update_train_steps(self):
         self.num_train_steps += 1
 
-def run_single_game(hparams: Hparams, train: Train, num_steps: int):
+def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int, GameStats]:
     game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.uint8).to(hparams.device)
     player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.uint8) * hparams.player_ids[0]
 
@@ -316,10 +316,15 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int):
         new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
         game_states[active_games_index] = new_game_states.detach().clone()
 
-        win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
-        train.game_stats.update_last_rewards(win_index)
+        if not torch.all(active_player_ids == active_player_ids[0]):
+            num_equal = (active_player_ids == active_player_ids[0]).sum().item()
+            num_not_equal = (active_player_ids != active_player_ids[0]).sum().item()
+            raise ValueError(f'bug: not all active_player_ids: {len(active_player_ids)} equal to active_player_ids[0]: {active_player_ids[0]}, '
+                             f'equal: {num_equal}, '
+                             f'not_equal: {num_not_equal}')
 
-        train.game_stats.append(active_games_index, {
+        player_id = active_player_ids[0].item()
+        train.game_stats[player_id].append(active_games_index, {
             'children_visits': children_visits,
             'root_values': root_values,
             'game_states': active_game_states,
@@ -328,6 +333,11 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int):
             'dones': dones,
             'player_ids': active_player_ids,
         })
+
+        win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
+        other_player_id = mcts.player_id_change(hparams, torch.tensor(player_id)).item()
+        train.game_stats[other_player_id].update_last_rewards(win_index)
+
         train.update_train_steps()
 
         # max_debug = 10

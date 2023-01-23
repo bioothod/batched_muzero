@@ -1,3 +1,5 @@
+from typing import Dict
+
 import argparse
 import grpc
 import io
@@ -5,7 +7,6 @@ import logging
 import os
 import pickle
 import time
-from module_loader import GameModule
 
 import torch
 import torch.multiprocessing as mp
@@ -45,7 +46,7 @@ def mapped_loads(s, map_location='cpu'):
     return unpickler.load()
 
 class MuzeroCollectionClient:
-    def __init__(self, client_id: str, game_ctl: GameModule, logger: logging.Logger):
+    def __init__(self, client_id: str, game_ctl: module_loader.GameModule, logger: logging.Logger):
         self.logger = logger
         self.game_ctl = game_ctl
         self.client_id = client_id
@@ -82,8 +83,8 @@ class MuzeroCollectionClient:
         self.inference.prediction.load_state_dict(checkpoint['prediction_state_dict'])
         self.inference.dynamic.load_state_dict(checkpoint['dynamic_state_dict'])
 
-    def send_game_stats(self, game_stats: simulation.GameStats):
-        game_stats_list = [game_stats]
+    def send_game_stats(self, game_stats: Dict[int, simulation.GameStats]):
+        game_stats_list = list(game_stats.values())
         meta = pickle.dumps(game_stats_list)
 
         resp = self.stub.SendGameStats(muzero_pb2.GameStats(
@@ -114,38 +115,46 @@ class MuzeroCollectionClient:
 
 
             if self.client_id == "client0":
-                for i in range(4):
-                    valid_index = game_stats.episode_len > i
-                    children_visits = game_stats.children_visits[valid_index, :, i].float()
-                    actions = game_stats.actions[valid_index, i]
+                for player_id, game_stat in game_stats.items():
 
-                    if len(children_visits) > 0:
-                        children_visits = {str(action):children_visits[:, action].mean(0) for action in range(children_visits.shape[-1])}
-                        self.summary_writer.add_scalars(f'collect/{self.client_id}/children_visits{i}', children_visits, self.generation)
-                        self.summary_writer.add_histogram(f'collect/{self.client_id}/actions{i}', actions, self.generation)
+                    prefix = f'collect/{self.client_id}/{player_id}'
 
-                self.summary_writer.add_scalar(f'collect/{self.client_id}/root_values', game_stats.root_values[:, 0].float().mean(), self.generation)
+                    for i in range(3):
+                        valid_index = game_stat.episode_len > i
+                        children_visits = game_stat.children_visits[valid_index, :, i].float()
+                        actions = game_stat.actions[valid_index, i]
 
-                episode_rewards = game_stats.rewards.float().sum(1)
-                self.summary_writer.add_histogram(f'collect/{self.client_id}/rewards', episode_rewards, self.generation, bins=3)
-                self.summary_writer.add_scalar(f'collect/{self.client_id}/mean_reward', episode_rewards.mean(), self.generation)
-                self.summary_writer.add_scalars(f'collect/{self.client_id}/results', {
-                    'wins': (episode_rewards > 0).sum() / len(episode_rewards),
-                    'looses': (episode_rewards < 0).sum() / len(episode_rewards),
-                    'draws': (episode_rewards == 0).sum() / len(episode_rewards),
-                }, self.generation)
+                        if len(children_visits) > 0:
+                            children_visits = {str(action):children_visits[:, action].mean(0) for action in range(children_visits.shape[-1])}
+                            self.summary_writer.add_scalars(f'{prefix}/children_visits{i}', children_visits, self.generation)
+                            self.summary_writer.add_histogram(f'{prefix}/actions{i}', actions, self.generation)
 
-                self.summary_writer.add_histogram(f'collect/{self.client_id}/train_steps', game_stats.episode_len, self.generation)
-                self.summary_writer.add_scalars(f'collect/{self.client_id}/train_steps', {
-                    'min': game_stats.episode_len.min(),
-                    'max': game_stats.episode_len.max(),
-                    'mean': game_stats.episode_len.float().mean(),
-                    'median': game_stats.episode_len.float().median(),
-                }, self.generation)
+                    self.summary_writer.add_scalar(f'{prefix}/root_values', game_stat.root_values[:, 0].float().mean(), self.generation)
+                    self.summary_writer.add_histogram(f'{prefix}/train_steps', game_stat.episode_len, self.generation)
+
+                    self.summary_writer.add_scalars(f'{prefix}/train_steps', {
+                        'min': game_stat.episode_len.min(),
+                        'max': game_stat.episode_len.max(),
+                        'mean': game_stat.episode_len.float().mean(),
+                        'median': game_stat.episode_len.float().median(),
+                    }, self.generation)
+
+                episode_rewards = {}
+                episode_rewards_mean = {}
+                for player_id, game_stat in game_stats.items():
+                    rewards = game_stat.rewards.float().sum(1)
+                    episode_rewards[f'wins{player_id}'] = (rewards > 0).sum() / len(rewards)
+                    episode_rewards[f'looses{player_id}'] = (rewards < 0).sum() / len(rewards)
+                    episode_rewards[f'draws'] = (rewards == 0).sum() / len(rewards)
+
+                    episode_rewards_mean[f'{player_id}'] = rewards.mean()
+
+                self.summary_writer.add_scalars(f'collect/{self.client_id}/results', episode_rewards, self.generation)
+                self.summary_writer.add_scalars(f'collect/{self.client_id}/mean_reward', episode_rewards_mean, self.generation)
 
                 self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.generation)
 
-def run_process(client_id: str, module: GameModule):
+def run_process(client_id: str, module: module_loader.GameModule):
     logfile = os.path.join(module.hparams.checkpoints_dir, f'{client_id}.log')
     logger = setup_logger(client_id, logfile, True)
 
