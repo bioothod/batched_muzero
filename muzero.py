@@ -95,7 +95,7 @@ class Trainer:
     def close(self):
         self.grpc_server.wait_for_termination()
 
-    def training_step(self, epoch: int, sample):
+    def training_step(self, epoch: int, sample: simulation.TrainElement):
         out = self.inference.initial(sample.player_ids[:, 0], sample.game_states)
         policy_loss = self.ce_loss(out.policy_logits, sample.children_visits[:, :, 0])
         value_loss = self.scalar_loss(out.value, sample.values[:, 0])
@@ -120,12 +120,13 @@ class Trainer:
             values = sample.values[batch_index]
             children_visits = sample.children_visits[batch_index]
             last_rewards = sample.last_rewards[batch_index]
+            player_id = sample.player_ids[batch_index]
 
             scale = torch.ones(len(last_rewards), device=self.hparams.device)*0.5
             scale = scale.unsqueeze(1).unsqueeze(1).unsqueeze(1)
             hidden_states = scale_gradient(out.hidden_state[len_idx], scale)
 
-            out = self.inference.recurrent(hidden_states, actions[:, step_idx-1])
+            out = self.inference.recurrent(hidden_states, player_id[:, step_idx], actions[:, step_idx-1])
 
             policy_loss = self.ce_loss(out.policy_logits, children_visits[:, :, step_idx])
             value_loss = self.scalar_loss(out.value, values[:, step_idx])
