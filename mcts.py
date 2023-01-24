@@ -284,6 +284,7 @@ class Tree:
 
             value[batch_index] = self.reward[batch_index, node_index] + self.hparams.value_discount * value[batch_index]
             #value[batch_index] = self.reward[batch_index, node_index] * node_multiplier + self.hparams.value_discount * value[batch_index]
+            value[batch_index] = (self.reward[batch_index, node_index] + self.hparams.value_discount * value[batch_index]) * node_multiplier
             self.min_max_stats.update(value)
 
         self.value_sum[:, 0] += value
@@ -377,13 +378,13 @@ class Tree:
                 self.logger.info(f'batch: {len(hidden_states)}, non-zero: {hidden_states_non_zero}, ratio: {hidden_states_non_zero/len(hidden_states)}')
 
             last_actions = actions.gather(1, last_episode).squeeze(1)
-            out = self.inference.recurrent(hidden_states, last_actions)
+            last_player_id = player_id.gather(1, last_episode).squeeze(1)
+            out = self.inference.recurrent(hidden_states, last_player_id, last_actions)
             self.store_states(search_path, episode_len+1, out.hidden_state)
 
 
             parent_index = search_path.gather(1, episode_len.unsqueeze(1)).squeeze(1)
             self.reward.scatter_(1, parent_index.unsqueeze(1), out.reward.unsqueeze(1))
-            last_player_id = player_id.gather(1, last_episode).squeeze(1)
 
             # max_debug = 10
             # self.logger.info(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()+1]}')
