@@ -178,9 +178,9 @@ class Dynamic(nn.Module):
 
         conv_blocks = []
 
-        if hparams.dyn_conv_res_num_features != hparams.hidden_size+1:
+        if hparams.dyn_conv_res_num_features != hparams.hidden_size+3:
             input_proj = nn.Sequential(
-                nn.Conv2d(hparams.hidden_size+1,
+                nn.Conv2d(hparams.hidden_size+3,
                           hparams.dyn_conv_res_num_features,
                           1,
                           padding='same'),
@@ -267,7 +267,7 @@ class Inference(GenericInference):
         #self.logger.info(f'inference: initial: game_states: {game_states.shape}: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}')
         return NetworkOutput(reward=rewards, hidden_state=hidden_states, policy_logits=policy_logits, value=values)
 
-    def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
+    def recurrent(self, hidden_states: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
         batch_size = len(hidden_states)
         actions_exp = F.one_hot(actions, self.hparams.num_actions)
         if self.game_name == 'tictactoe':
@@ -279,7 +279,12 @@ class Inference(GenericInference):
             actions_exp = actions_exp.tile([1, fill, 1])
             actions_exp = actions_exp.unsqueeze(1)
 
-        inputs = torch.cat([hidden_states, actions_exp], 1)
+        player_id_oh = F.one_hot(player_id.long()-1, len(self.hparams.player_ids)).unsqueeze(2).unsqueeze(3)
+        player_states = torch.zeros(batch_size, len(self.hparams.player_ids), *hidden_states.shape[2:]).type_as(hidden_states).to(hidden_states.device)
+        for player_index, local_player_id in enumerate(self.hparams.player_ids):
+            player_states[:, player_index, :, :] = player_id_oh[:, player_index, :, :]
+
+        inputs = torch.cat([hidden_states, player_states, actions_exp], 1)
         new_hidden_states, rewards = self.dynamic(inputs)
         policy_logits, values = self.prediction(new_hidden_states)
         #self.logger.info(f'inference: recurrent: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}, values: {values.shape}')
