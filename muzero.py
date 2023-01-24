@@ -46,6 +46,10 @@ def train_element_collate_fn(samples: List[simulation.TrainElement]):
 
     return simulation.TrainElement(**converted_dict)
 
+def action_selection_fn(children_visit_counts: torch.Tensor):
+    actions = torch.argmax(children_visit_counts, 1)
+    return actions
+
 class Trainer:
     def __init__(self, game_ctl: module_loader.GameModule, logger: logging.Logger, eval_ds: Optional[EvaluationDataset]):
         self.game_ctl = game_ctl
@@ -174,7 +178,7 @@ class Trainer:
         hparams = deepcopy(self.hparams)
         hparams.batch_size = len(self.eval_ds.game_states)
 
-        train = simulation.Train(self.game_ctl, self.inference, self.logger, self.summary_writer, 'eval')
+        train = simulation.Train(self.game_ctl, self.inference, self.logger, self.summary_writer, 'eval', action_selection_fn)
         with torch.no_grad():
             game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.uint8).to(hparams.device)
             active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
