@@ -61,7 +61,7 @@ class ConnectXHparams(GenericHparams):
     max_episode_len: int = 42
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 30
+    num_steps_to_argmax_action_selection: int = 6000
 
     num_unroll_steps: int = 5
     td_steps: int = 42
@@ -80,7 +80,7 @@ class TicTacToeHparams(GenericHparams):
     max_episode_len: int = 9
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 6
+    num_steps_to_argmax_action_selection: int = 2000
 
 
     num_unroll_steps: int = 5

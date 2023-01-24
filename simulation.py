@@ -1,4 +1,4 @@
-from typing import Dict, List, NamedTuple
+from typing import Callable, Dict, List, NamedTuple
 
 import logging
 
@@ -228,7 +228,8 @@ class Train:
                  inference: Inference,
                  logger: logging.Logger,
                  summary_writer: SummaryWriter,
-                 summary_prefix: str):
+                 summary_prefix: str,
+                 action_selection_fn: Callable):
         self.game_ctl = game_ctl
         self.hparams = game_ctl.hparams
         self.logger = logger
@@ -236,6 +237,8 @@ class Train:
         self.summary_writer = summary_writer
         self.summary_prefix = summary_prefix
         self.summary_step = 0
+
+        self.action_selection_fn = action_selection_fn
 
         self.num_train_steps = 0
         self.game_stats = {player_id:GameStats(game_ctl.hparams, self.logger) for player_id in self.hparams.player_ids}
@@ -279,17 +282,9 @@ class Train:
         children_visits = children_visit_counts / children_sum_visits.unsqueeze(1)
         root_values = tree.value(batch_index, node_index.unsqueeze(1)).squeeze(1)
 
-        if self.num_train_steps >= self.hparams.num_steps_to_argmax_action_selection:
-            actions = torch.argmax(children_visit_counts, 1)
-        else:
-            temperature = 1.0 # play according to softmax distribution
-
-            dist = torch.pow(children_visit_counts, 1 / temperature)
-            actions = torch.multinomial(dist, 1)
-            actions = actions.squeeze(1)
+        actions = self.action_selection_fn(children_visit_counts)
 
         actions = actions.type(torch.uint8)
-        children_visits = children_visits
         # max_debug = 10
         # self.logger.info(f'train_steps: {self.num_train_steps}, '
         #                  f'children_index:\n{children_index[:max_debug]}\n'
