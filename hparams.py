@@ -38,7 +38,7 @@ class GenericHparams:
 
     num_steps_to_argmax_action_selection: int
 
-    max_training_games: int = 100
+    max_training_games: int = 250
 
     server_port: int = 50051
     num_server_workers: int = 2
@@ -61,7 +61,7 @@ class ConnectXHparams(GenericHparams):
     max_episode_len: int = 42
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 6000
+    num_steps_to_argmax_action_selection: int = 30000
 
     num_unroll_steps: int = 5
     td_steps: int = 42
