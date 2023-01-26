@@ -11,15 +11,12 @@ class NetworkParams:
 
     repr_conv_res_num_features: int
     repr_conv_num_blocks: int
+    repr_linear_num_features: int
 
-    pred_conv_res_num_features: int
-    pred_conv_num_blocks: int
-    pred_hidden_linear_layers: List[int] = []
-    num_actions: int
+    pred_hidden_linear_layers: List[int]
+    num_actions: int = 0
 
-    dyn_conv_res_num_features: int
-    dyn_conv_num_blocks: int
-    dyn_reward_linear_layers: List[int] = []
+    dyn_reward_linear_layers: List[int]
 
     activation_str: str = 'LeakyReLU'
     activation_args: List = []
@@ -51,19 +48,15 @@ class NetworkParams:
 
 class ConnectXParams(NetworkParams):
     kernel_size: int = 4
-    hidden_size: int = 16
 
-    repr_conv_res_num_features: int = 24
-    repr_conv_num_blocks: int = 4
+    repr_conv_res_num_features: int = 32
+    repr_conv_num_blocks: int = 6
+    repr_linear_num_features: int = 512
 
-    pred_conv_res_num_features: int = 24
-    pred_conv_num_blocks: int = 2
-    pred_hidden_linear_layers: List[int] = [128, 128]
+    pred_hidden_linear_layers: List[int] = [128]
     num_actions: int = 0
 
-    dyn_conv_res_num_features: int = 24
-    dyn_conv_num_blocks: int = 4
-    dyn_reward_linear_layers: List[int] = [128, 128]
+    dyn_reward_linear_layers: List[int] = [128]
 
     activation_str: str = 'LeakyReLU'
     activation_args: List = []

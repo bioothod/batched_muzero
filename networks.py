@@ -43,47 +43,6 @@ class ResidualBlock(nn.Module):
         x = self.activation1(x)
         return x
 
-class Representation(nn.Module):
-    def __init__(self, hparams: NetworkParams) -> None:
-        super().__init__()
-
-        spatial_shape = hparams.observation_shape[-2:]
-
-        self.input_proj = nn.Sequential(
-            nn.Conv2d(3,
-                      hparams.repr_conv_res_num_features,
-                      hparams.kernel_size,
-                      padding='same'),
-            nn.BatchNorm2d(hparams.repr_conv_res_num_features),
-            hparams.activation(),
-        )
-
-        res_blocks = []
-        for _ in range(hparams.repr_conv_num_blocks):
-            block = ResidualBlock(
-                num_features=hparams.repr_conv_res_num_features,
-                kernel_size=hparams.kernel_size,
-                activation=hparams.activation)
-            res_blocks.append(block)
-
-        self.conv_blocks = nn.Sequential(*res_blocks)
-
-        self.hidden_size_proj = nn.Sequential(
-            nn.Conv2d(hparams.repr_conv_res_num_features,
-                      hparams.hidden_size,
-                      kernel_size=1,
-                      padding='same'),
-            nn.LayerNorm([hparams.hidden_size, *spatial_shape]),
-            hparams.activation(),
-        )
-
-    def forward(self, inputs):
-        x = self.input_proj(inputs)
-        x = self.conv_blocks(x)
-        x = self.hidden_size_proj(x)
-        return x
-
-
 class LinearPrediction(nn.Module):
 
     def __init__(self,
@@ -110,112 +69,141 @@ class LinearPrediction(nn.Module):
     def forward(self, inputs):
         return self.blocks(inputs)
 
-
-class Prediction(nn.Module):
+class Representation(nn.Module):
     def __init__(self, hparams: NetworkParams) -> None:
         super().__init__()
 
         spatial_shape = hparams.observation_shape[-2:]
 
-        conv_blocks = []
-
-        if hparams.pred_conv_res_num_features != hparams.hidden_size:
-            input_proj = nn.Sequential(
-                nn.Conv2d(hparams.hidden_size,
-                          hparams.pred_conv_res_num_features,
-                          1,
-                          padding='same'),
-                nn.BatchNorm2d(hparams.pred_conv_res_num_features),
-                hparams.activation(),
-            )
-            conv_blocks.append(input_proj)
-
-        for _ in range(hparams.pred_conv_num_blocks):
-            block = ResidualBlock(
-                num_features=hparams.pred_conv_res_num_features,
-                kernel_size=hparams.kernel_size,
-                activation=hparams.activation)
-            conv_blocks.append(block)
-
-        self.hidden_size_proj = nn.Sequential(
-            nn.Conv2d(hparams.pred_conv_res_num_features,
-                      hparams.hidden_size,
-                      kernel_size=1,
+        self.input_proj = nn.Sequential(
+            nn.Conv2d(3,
+                      hparams.repr_conv_res_num_features,
+                      hparams.kernel_size,
                       padding='same'),
-            nn.LayerNorm([hparams.hidden_size, *spatial_shape]),
+            nn.BatchNorm2d(hparams.repr_conv_res_num_features),
             hparams.activation(),
         )
 
-        self.conv_blocks = nn.Sequential(*conv_blocks)
+        res_blocks = []
+        for _ in range(hparams.repr_conv_num_blocks):
+            block = ResidualBlock(
+                num_features=hparams.repr_conv_res_num_features,
+                kernel_size=hparams.kernel_size,
+                activation=hparams.activation)
+            res_blocks.append(block)
 
-        hidden_output_size = hparams.hidden_size * np.prod(hparams.observation_shape)
+        self.conv_blocks = nn.Sequential(*res_blocks)
 
-        self.output_policy_logits = LinearPrediction(hidden_output_size,
+        self.linear_encoder = nn.Sequential(
+            nn.Flatten(),
+
+            nn.Linear(hparams.repr_conv_res_num_features*np.prod(hparams.observation_shape), hparams.repr_linear_num_features),
+            nn.LeakyReLU(),
+            nn.LayerNorm(hparams.repr_linear_num_features),
+        )
+
+    def forward(self, inputs):
+        x = self.input_proj(inputs)
+        x = self.conv_blocks(x)
+        x = self.linear_encoder(x)
+        return x
+
+class Prediction(nn.Module):
+    def __init__(self, hparams: NetworkParams) -> None:
+        super().__init__()
+
+        self.output_policy_logits = LinearPrediction(hparams.repr_linear_num_features,
                                                      hparams.pred_hidden_linear_layers,
                                                      hparams.num_actions,
                                                      hparams.activation)
-        self.output_value = LinearPrediction(hidden_output_size,
+        self.output_value = LinearPrediction(hparams.repr_linear_num_features,
                                              hparams.pred_hidden_linear_layers,
                                              1,
                                              hparams.activation,
                                              output_activation=None)
 
     def forward(self, inputs):
-        x = self.conv_blocks(inputs)
-        x = self.hidden_size_proj(x)
-
-        p = self.output_policy_logits(x)
-        v = self.output_value(x).squeeze(1)
+        p = self.output_policy_logits(inputs)
+        v = self.output_value(inputs).squeeze(1)
         return p, v
 
-
-class Dynamic(nn.Module):
-
-    def __init__(self, hparams: NetworkParams) -> None:
+class MACDModelTransformer(nn.Module):
+    def __init__(self, seq_len):
         super().__init__()
 
-        spatial_shape = hparams.observation_shape[-2:]
-
-        conv_blocks = []
-
-        if hparams.dyn_conv_res_num_features != hparams.hidden_size+3:
-            input_proj = nn.Sequential(
-                nn.Conv2d(hparams.hidden_size+3,
-                          hparams.dyn_conv_res_num_features,
-                          1,
-                          padding='same'),
-                nn.BatchNorm2d(hparams.dyn_conv_res_num_features),
-                hparams.activation(),
-            )
-            conv_blocks.append(input_proj)
-
-        for _ in range(hparams.dyn_conv_num_blocks):
-            block = ResidualBlock(num_features=hparams.dyn_conv_res_num_features,
-                                  kernel_size=hparams.kernel_size,
-                                  activation=hparams.activation)
-            conv_blocks.append(block)
+        input_dim = 1
+        input_proj = 1+5
 
 
-        conv_blocks.append(nn.Sequential(
-            nn.Conv2d(hparams.repr_conv_res_num_features,
-                      hparams.hidden_size,
-                      kernel_size=1,
-                      padding='same'),
-            nn.LayerNorm([hparams.hidden_size, *spatial_shape]),
-            hparams.activation(),
-        ))
+        self.decoder_projection = nn.Conv1d(input_proj, 1, 1)
 
-        self.conv_blocks = nn.Sequential(*conv_blocks)
+        print_networks('MACDModelTransformer', self, True)
 
-        hidden_output_size = hparams.hidden_size * np.prod(hparams.observation_shape)
-        self.output_reward = LinearPrediction(hidden_output_size,
+    def _generate_square_subsequent_mask(self, sz, shift=0):
+        mask = torch.ones(sz, sz)
+        mask = torch.triu(mask)
+        if shift > 0:
+            shifted_mask = torch.where(torch.triu(mask, diagonal=shift) == 1, 0, 1)
+            mask = mask * shifted_mask
+        mask = mask.transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        return mask
+
+    def forward(self, seq):
+        # [B, L, Fin]
+        batch_size, seq_len = seq.shape[:2]
+
+        src = seq
+        # [B, L, Fin] -> [L, B, Fin]
+        src = src.permute((1, 0, 2))
+
+        mask = self._generate_square_subsequent_mask(seq_len, 30).to(seq.device)
+        #mask = self._generate_square_subsequent_mask(seq_len).to(seq.device)
+
+        # [L, B, F] -> [L, B, F]
+        out = self.encoder(src, mask)
+
+        # [L, B, F] -> [B, F, L]
+        out = out.permute((1, 2, 0))
+
+        # [B, F, L] -> [B, 1, L]
+        out = self.decoder_projection(out)
+
+        # [B, 1, L] -> [B, L, 1]
+        out = out.permute((0, 2, 1))
+
+        return out
+
+class Dynamic(nn.Module):
+    def __init__(self, hparams: NetworkParams, state_extension: int) -> None:
+        super().__init__()
+
+        self.input_proj = nn.Sequential(
+            nn.Conv1d(hparams.repr_linear_num_features+state_extension, hparams.repr_linear_num_features, 1),
+            nn.LeakyReLU(0.01),
+            nn.LayerNorm([hparams.repr_linear_num_features, 1])
+        )
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hparams.repr_linear_num_features,
+            nhead=4,
+            dim_feedforward=1024,
+            dropout=0.2,
+            activation='relu'
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+
+        self.output_reward = LinearPrediction(hparams.repr_linear_num_features,
                                               hparams.dyn_reward_linear_layers,
                                               1,
                                               hparams.activation,
                                               output_activation=None)
 
     def forward(self, inputs):
-        next_state = self.conv_blocks(inputs)
+        x = inputs.unsqueeze(2)
+        x = self.input_proj(x)
+        x = x.squeeze(2)
+        next_state = self.encoder(x)
         reward = self.output_reward(next_state).squeeze(1)
         return next_state, reward
 
@@ -229,7 +217,9 @@ class Inference(GenericInference):
 
         self.representation = Representation(game_ctl.network_hparams).to(self.hparams.device)
         self.prediction = Prediction(game_ctl.network_hparams).to(self.hparams.device)
-        self.dynamic = Dynamic(game_ctl.network_hparams).to(self.hparams.device)
+
+        state_extension = len(game_ctl.hparams.player_ids) + game_ctl.hparams.num_actions
+        self.dynamic = Dynamic(game_ctl.network_hparams, state_extension).to(self.hparams.device)
 
         self.models = [self.representation, self.prediction, self.dynamic]
 
@@ -268,22 +258,11 @@ class Inference(GenericInference):
         return NetworkOutput(reward=rewards, hidden_state=hidden_states, policy_logits=policy_logits, value=values)
 
     def recurrent(self, hidden_states: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
-        batch_size = len(hidden_states)
         actions_exp = F.one_hot(actions, self.hparams.num_actions)
-        if self.game_name == 'tictactoe':
-            actions_exp = actions_exp.view(batch_size, *self.hparams.state_shape)
-            actions_exp = actions_exp.unsqueeze(1)
-        elif self.game_name == 'connectx':
-            actions_exp = actions_exp.unsqueeze(1)
-            fill = hidden_states.shape[2]
-            actions_exp = actions_exp.tile([1, fill, 1])
-            actions_exp = actions_exp.unsqueeze(1)
 
-        player_id_oh = F.one_hot(player_id.long()-1, len(self.hparams.player_ids)).unsqueeze(2).unsqueeze(3)
-        player_states = torch.zeros(batch_size, len(self.hparams.player_ids), *hidden_states.shape[2:]).type_as(hidden_states).to(hidden_states.device)
-        for player_index, local_player_id in enumerate(self.hparams.player_ids):
-            player_states[:, player_index, :, :] = player_id_oh[:, player_index, :, :]
+        player_states = F.one_hot(player_id.long()-1, len(self.hparams.player_ids))
 
+        #self.logger.info(f'hidden_states: {hidden_states.shape}, player_states: {player_states.shape}, actions_exp: {actions_exp.shape}')
         inputs = torch.cat([hidden_states, player_states, actions_exp], 1)
         new_hidden_states, rewards = self.dynamic(inputs)
         policy_logits, values = self.prediction(new_hidden_states)

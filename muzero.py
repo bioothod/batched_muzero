@@ -126,8 +126,7 @@ class Trainer:
             last_rewards = sample.last_rewards[batch_index]
             player_id = sample.player_ids[batch_index]
 
-            scale = torch.ones(len(last_rewards), device=self.hparams.device)*0.5
-            scale = scale.unsqueeze(1).unsqueeze(1).unsqueeze(1)
+            scale = torch.ones([len(last_rewards), 1], device=self.hparams.device)*0.5
             hidden_states = scale_gradient(out.hidden_state[len_idx], scale)
 
             out = self.inference.recurrent(hidden_states, player_id[:, step_idx], actions[:, step_idx-1])

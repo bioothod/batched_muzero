@@ -372,10 +372,6 @@ class Tree:
             last_episode = last_episode.unsqueeze(1)
 
             hidden_states = self.load_states(search_path, episode_len)
-            hidden_states_sum = hidden_states.sum([1, 2, 3])
-            hidden_states_non_zero = torch.count_nonzero(hidden_states_sum, 0)
-            if hidden_states_non_zero != len(hidden_states):
-                self.logger.info(f'batch: {len(hidden_states)}, non-zero: {hidden_states_non_zero}, ratio: {hidden_states_non_zero/len(hidden_states)}')
 
             last_actions = actions.gather(1, last_episode).squeeze(1)
             last_player_id = player_id.gather(1, last_episode).squeeze(1)
