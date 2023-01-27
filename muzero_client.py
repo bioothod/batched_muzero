@@ -1,6 +1,7 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import argparse
+import datetime
 import grpc
 import io
 import logging
@@ -46,7 +47,7 @@ def mapped_loads(s, map_location='cpu'):
     return unpickler.load()
 
 class MuzeroCollectionClient:
-    def __init__(self, client_id: str, game_ctl: module_loader.GameModule, logger: logging.Logger):
+    def __init__(self, client_id: str, game_ctl: module_loader.GameModule, logger: logging.Logger, write_summary=False):
         self.logger = logger
         self.game_ctl = game_ctl
         self.client_id = client_id
@@ -61,8 +62,12 @@ class MuzeroCollectionClient:
         self.generation = -1
 
         self.inference = Inference(self.game_ctl, logger)
-        tensorboard_log_dir = os.path.join(self.game_ctl.hparams.checkpoints_dir, 'tensorboard_logs')
-        self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir)
+
+        self.summary_writer: Optional[SummaryWriter] = None
+        self.write_summary = write_summary
+        if write_summary:
+            tensorboard_log_dir = os.path.join(self.game_ctl.hparams.checkpoints_dir, 'tensorboard_logs')
+            self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir)
 
     def action_selection_fn(self, children_visit_counts: torch.Tensor):
         if self.generation >= self.game_ctl.hparams.num_steps_to_argmax_action_selection:
@@ -90,12 +95,17 @@ class MuzeroCollectionClient:
     def load_weights(self, weights):
         checkpoint = mapped_loads(weights, map_location=self.game_ctl.hparams.device)
 
-        self.inference.representation.load_state_dict(checkpoint['representation_state_dict'])
-        self.inference.prediction.load_state_dict(checkpoint['prediction_state_dict'])
-        self.inference.dynamic.load_state_dict(checkpoint['dynamic_state_dict'])
+        def convert(state_dict, device):
+            for value in state_dict.values():
+                value.to(device)
+            return state_dict
 
-    def send_game_stats(self, game_stats: Dict[int, simulation.GameStats]):
-        game_stats_list = list(game_stats.values())
+        self.inference.representation.load_state_dict(convert(checkpoint['representation_state_dict'], self.game_ctl.hparams.device))
+        self.inference.prediction.load_state_dict(convert(checkpoint['prediction_state_dict'], self.game_ctl.hparams.device))
+        self.inference.dynamic.load_state_dict(convert(checkpoint['dynamic_state_dict'], self.game_ctl.hparams.device))
+
+    def send_game_stats(self, game_stats: Dict[int, simulation.GameStats], collection_time: float):
+        game_stats_list = [game_stat.to('cpu') for game_stat in game_stats.values()]
         meta = pickle.dumps(game_stats_list)
 
         resp = self.stub.SendGameStats(muzero_pb2.GameStats(
@@ -103,7 +113,8 @@ class MuzeroCollectionClient:
             stats=meta,
         ))
 
-        self.logger.info(f'game stats updated: {self.generation} -> {resp.generation}')
+        collection_time_str = str(datetime.timedelta(seconds=collection_time))
+        self.logger.info(f'game stats updated: {self.generation} -> {resp.generation}, simulations: {self.game_ctl.hparams.num_simulations}, collection_time: {collection_time_str}')
 
     def collect_episode(self):
         with torch.no_grad():
@@ -120,12 +131,11 @@ class MuzeroCollectionClient:
 
             collection_time = perf_counter() - start_time
 
-            self.send_game_stats(game_stats)
+            self.send_game_stats(game_stats, collection_time)
             if self.generation == 0:
                 time.sleep(1)
 
-
-            if self.client_id == "client0":
+            if self.write_summary and self.summary_writer is not None:
                 for player_id, game_stat in game_stats.items():
 
                     prefix = f'collect/{self.client_id}/{player_id}'
@@ -165,14 +175,17 @@ class MuzeroCollectionClient:
 
                 self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.generation)
 
-def run_process(client_id: str, module: module_loader.GameModule):
+def run_process(client_id: str, module: module_loader.GameModule, write_summary: bool):
     logfile = os.path.join(module.hparams.checkpoints_dir, f'{client_id}.log')
     logger = setup_logger(client_id, logfile, True)
+
+    if module.hparams.device == 'cpu':
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
     #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
     module.load()
-    client = MuzeroCollectionClient(client_id, module, logger)
+    client = MuzeroCollectionClient(client_id, module, logger, write_summary)
     while True:
         client.collect_episode()
 
@@ -191,14 +204,18 @@ def main():
     module = module_loader.GameModule(FLAGS.game, load=False)
     module.hparams.batch_size = FLAGS.batch_size
     module.hparams.num_simulations = FLAGS.num_steps
-    module.hparams.device = 'cuda:0'
+
+    if torch.cuda.is_available():
+        module.hparams.device = 'cuda:0'
+    else:
+        module.hparams.device = 'cpu'
 
     mp.set_start_method('spawn')
 
     processes = []
     for cid in range(FLAGS.start_id, FLAGS.start_id+FLAGS.num_clients):
         client_id = f'client{cid}'
-        p = mp.Process(target=run_process, args=(client_id, module))
+        p = mp.Process(target=run_process, args=(client_id, module, cid==FLAGS.start_id))
         p.start()
         processes.append(p)
 
