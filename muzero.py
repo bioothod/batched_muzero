@@ -126,8 +126,9 @@ class Trainer:
             last_rewards = sample.last_rewards[batch_index]
             player_id = sample.player_ids[batch_index]
 
-            scale = torch.ones([len(last_rewards), 1], device=self.hparams.device)*0.5
-            hidden_states = scale_gradient(out.hidden_state[len_idx], scale)
+            hidden_states = out.hidden_state[len_idx]
+            scale = torch.ones_like(hidden_states, device=out.hidden_state.device)*0.5
+            hidden_states = scale_gradient(hidden_states, scale)
 
             out = self.inference.recurrent(hidden_states, player_id[:, step_idx], actions[:, step_idx-1])
 
@@ -156,6 +157,7 @@ class Trainer:
             for opt in self.optimizers:
                 opt.zero_grad()
 
+            sample = sample.to(self.hparams.device)
             total_loss = self.training_step(epoch, sample)
 
             total_loss.backward()
@@ -179,7 +181,7 @@ class Trainer:
 
         train = simulation.Train(self.game_ctl, self.inference, self.logger, self.summary_writer, 'eval', action_selection_fn)
         with torch.no_grad():
-            game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.uint8).to(hparams.device)
+            game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.int64).to(hparams.device)
             active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
 
             active_game_states = game_states[active_games_index]

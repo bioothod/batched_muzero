@@ -69,10 +69,11 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor)
 
 @torch.jit.script
 def step_games(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor):
-    actions = actions.long()
+    actions = actions.long().to(games.device)
+    player_id = player_id.float()
 
     num_games = len(games)
-    games_after_actions = games[torch.arange(num_games, dtype=torch.int64), :, actions]
+    games_after_actions = games[torch.arange(num_games, dtype=torch.int64, device=games.device), :, actions]
     non_zero = torch.count_nonzero(games_after_actions, 1)
 
     invalid_action_index_batch = non_zero == hparams.rows

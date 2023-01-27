@@ -52,12 +52,13 @@ class ReplayBuffer:
 
     def sample(self, batch_size: int) -> List[TrainElement]:
         all_games = self.flatten_games()
+        device = all_games[0].game_states.device
 
         samples = []
         while len(samples) < batch_size:
             game_stat = random.choice(all_games)
 
-            start_pos = torch.randint(low=0, high=game_stat.episode_len.max(), size=(len(game_stat.episode_len),)).to(self.hparams.device)
+            start_pos = torch.randint(low=0, high=game_stat.episode_len.max(), size=(len(game_stat.episode_len),)).to(device)
             start_pos -= self.hparams.num_unroll_steps
             start_pos = torch.where(start_pos <= 0, 0, start_pos)
             start_pos = torch.where(start_pos+self.hparams.num_unroll_steps>=game_stat.episode_len, 0, start_pos)

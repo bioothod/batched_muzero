@@ -9,7 +9,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from hparams import GenericHparams as Hparams
-from inference import Inference
+from inference import GenericInference
 import module_loader
 import mcts
 
@@ -34,6 +34,17 @@ class TrainElement:
             children_visits = sample_dict['children_visits'],
             player_ids = sample_dict['player_ids'],
         )
+
+
+    def to(self, device):
+        self.values = self.values.to(device)
+        self.last_rewards = self.last_rewards.to(device)
+        self.children_visits = self.children_visits.to(device)
+        self.game_states = self.game_states.to(device)
+        self.actions = self.actions.to(device)
+        self.sample_len = self.sample_len.to(device)
+        self.player_ids = self.player_ids.to(device)
+        return self
 
 def roll_by_gather(mat, dim, shifts: torch.LongTensor):
     # assumes 2D array
@@ -62,14 +73,14 @@ class GameStats:
         self.logger = logger
         self.hparams = hparams
 
-        self.episode_len = torch.zeros(hparams.batch_size, dtype=torch.uint8, device=hparams.device)
+        self.episode_len = torch.zeros(hparams.batch_size, dtype=torch.int64, device=hparams.device)
         self.rewards = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
         self.root_values = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
         self.children_visits = torch.zeros(hparams.batch_size, hparams.num_actions, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
-        self.actions = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.uint8, device=hparams.device)
-        self.player_ids = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.uint8, device=hparams.device)
+        self.actions = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
+        self.player_ids = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
         self.dones = torch.zeros(hparams.batch_size, dtype=torch.bool, device=hparams.device)
-        self.game_states = torch.zeros([hparams.batch_size, hparams.max_episode_len] + hparams.state_shape, dtype=torch.uint8, device=hparams.device)
+        self.game_states = torch.zeros([hparams.batch_size, hparams.max_episode_len] + hparams.state_shape, dtype=torch.float32, device=hparams.device)
 
         self.stored_tensors = {
             'rewards': self.rewards,
@@ -81,9 +92,7 @@ class GameStats:
             'game_states': self.game_states,
         }
 
-    def move(self, device):
-        self.hparams.device = device
-
+    def to(self, device):
         self.episode_len = self.episode_len.to(device)
         self.rewards = self.rewards.to(device)
         self.root_values = self.root_values.to(device)
@@ -122,15 +131,15 @@ class GameStats:
         self.rewards[win_index, episode_len-1] = -1
 
     def make_target(self, start_index: torch.Tensor) -> List[TrainElement]:
-        target_values = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
-        target_last_rewards = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
-        target_children_visits = torch.zeros(len(start_index), self.hparams.num_actions, self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=self.hparams.device)
-        taken_actions = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=self.hparams.device)
-        player_ids = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=self.hparams.device)
+        target_values = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=start_index.device)
+        target_last_rewards = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=start_index.device)
+        target_children_visits = torch.zeros(len(start_index), self.hparams.num_actions, self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=start_index.device)
+        taken_actions = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=start_index.device)
+        player_ids = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=start_index.device)
 
-        sample_len = torch.zeros(len(start_index), dtype=torch.int64, device=self.hparams.device)
+        sample_len = torch.zeros(len(start_index), dtype=torch.int64, device=start_index.device)
 
-        batch_index = torch.arange(len(start_index), dtype=torch.int64, device=self.hparams.device)
+        batch_index = torch.arange(len(start_index), dtype=torch.int64, device=start_index.device)
         game_states = self.game_states[batch_index, start_index].float()
 
         if start_index.device != self.episode_len.device:
@@ -155,14 +164,14 @@ class GameStats:
             #              f'bootstrap_index: {bootstrap_index.cpu().numpy()}, '
             #              f'bootstrap_update_index: {bootstrap_update_index.cpu().numpy()}/{bootstrap_update_index.shape}, '
             #              )
-            values = torch.zeros(len(self.root_values), device=self.hparams.device).float()
+            values = torch.zeros(len(self.root_values), device=start_index.device).float()
             if bootstrap_update_index.sum() > 0:
                 #self.logger.info(f'bootstrap_update_index: {bootstrap_update_index}')
                 valid_batch_index = batch_index[bootstrap_update_index]
                 last_discount = self.hparams.value_discount ** self.hparams.td_steps
                 values[bootstrap_update_index] = self.root_values[valid_batch_index, bootstrap_index].float() * last_discount
 
-            discount_mult = torch.logspace(0, self.hparams.td_steps, self.rewards.shape[1], base=self.hparams.value_discount).to(self.hparams.device)
+            discount_mult = torch.logspace(0, self.hparams.td_steps, self.rewards.shape[1], base=self.hparams.value_discount).to(start_index.device)
             if discount_mult.device != start_index.device:
                 msg = f'1 start_index: {start_index.device}, discount_mutl: {discount_mult.device}, hparams.device: {self.hparams.device}'
                 self.logger.critical(msg)
@@ -176,7 +185,7 @@ class GameStats:
                 raise ValueError(msg)
 
             last_index = torch.minimum(bootstrap_index, self.episode_len)
-            all_rewards_index = torch.arange(self.rewards.shape[1], device=self.hparams.device).long().unsqueeze(0).tile([len(start_index), 1])
+            all_rewards_index = torch.arange(self.rewards.shape[1], device=start_index.device).long().unsqueeze(0).tile([len(start_index), 1])
 
             if discount_mult.device != start_index.device:
                 msg = f'start_index: {start_index.device}, discount_mutl: {discount_mult.device}'
@@ -225,7 +234,7 @@ class GameStats:
 class Train:
     def __init__(self,
                  game_ctl: module_loader.GameModule,
-                 inference: Inference,
+                 inference: GenericInference,
                  logger: logging.Logger,
                  summary_writer: SummaryWriter,
                  summary_prefix: str,
@@ -254,7 +263,7 @@ class Train:
 
         out = self.inference.initial(initial_player_id, initial_game_states)
 
-        episode_len = torch.ones(len(node_index), dtype=torch.uint8).to(self.hparams.device)
+        episode_len = torch.ones(len(node_index), dtype=torch.int64).to(self.hparams.device)
         search_path = torch.zeros(len(node_index), 1).long().to(self.hparams.device)
 
         tree.store_states(search_path, episode_len, out.hidden_state)
@@ -284,7 +293,7 @@ class Train:
 
         actions = self.action_selection_fn(children_visit_counts)
 
-        actions = actions.type(torch.uint8)
+        actions = actions.type(torch.int64)
         # max_debug = 10
         # self.logger.info(f'train_steps: {self.num_train_steps}, '
         #                  f'children_index:\n{children_index[:max_debug]}\n'
@@ -299,8 +308,8 @@ class Train:
         self.num_train_steps += 1
 
 def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int, GameStats]:
-    game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.uint8).to(hparams.device)
-    player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.uint8) * hparams.player_ids[0]
+    game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.float32, device=hparams.device)
+    player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.int64) * hparams.player_ids[0]
 
     active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
 

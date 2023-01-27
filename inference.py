@@ -23,7 +23,7 @@ class NetworkOutput:
         else:
             self.value = torch.zeros_like(reward)
 
-class Inference:
+class GenericInference:
     def __init__(self, game_ctl: module_loader.GameModule, logger: logging.Logger):
         self.logger = logger
         self.hparams = game_ctl.hparams
@@ -54,5 +54,5 @@ class Inference:
     def initial(self, player_id: torch.Tensor, game_states: torch.Tensor) -> NetworkOutput:
         raise NotImplementedError(f'@initial() method is not implemented')
 
-    def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
+    def recurrent(self, hidden_states: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
         raise NotImplementedError(f'@initial() method is not implemented')

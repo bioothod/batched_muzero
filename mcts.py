@@ -8,10 +8,10 @@ import torch
 from copy import deepcopy
 
 from hparams import GenericHparams as Hparams
-from inference import Inference, NetworkOutput
+from inference import GenericInference, NetworkOutput
 from logger import setup_logger
 
-class MCTSInference(Inference):
+class MCTSInference(GenericInference):
     def __init__(self, hparams: Hparams, logger: logging.Logger):
         super().__init__(hparams, logger)
 
@@ -28,7 +28,7 @@ class MCTSInference(Inference):
         self.logger.info(f'inference: initial: game_states: {game_states.shape}: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, reward: {reward.shape}')
         return NetworkOutput(reward=reward, hidden_state=hidden_states, policy_logits=policy_logits)
 
-    def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
+    def recurrent(self, hidden_states: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
         batch_size = hidden_states.shape[0]
 
         new_hidden_states = hidden_states.detach().clone()
@@ -85,10 +85,10 @@ class Tree:
     saved_children_index: torch.Tensor
     hidden_states: Dict[HashKey, torch.Tensor]
     hparams: Hparams
-    inference: Inference
+    inference: GenericInference
     logger: logging.Logger
 
-    def __init__(self, hparams: Hparams, player_id: torch.Tensor, inference: Inference, logger: logging.Logger):
+    def __init__(self, hparams: Hparams, player_id: torch.Tensor, inference: GenericInference, logger: logging.Logger):
         self.hparams = deepcopy(hparams)
         self.hparams.batch_size = len(player_id)
 
@@ -108,7 +108,7 @@ class Tree:
         self.prior = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.float32).to(hparams.device)
         self.reward = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.float32).to(hparams.device)
         self.expanded = torch.zeros([self.hparams.batch_size, max_size]).bool().to(hparams.device)
-        self.player_id = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.uint8).to(hparams.device)
+        self.player_id = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.int64).to(hparams.device)
         self.player_id[:, 0] = player_id.detach().clone().to(self.hparams.device)
         self.hidden_states = {}
 
@@ -299,7 +299,7 @@ class Tree:
         return hidden_states
 
     def store_states(self, search_path: torch.Tensor, episode_len: torch.Tensor, hidden_states: torch.Tensor):
-        search_path = search_path.detach().cpu().numpy().astype(np.uint8)
+        search_path = search_path.detach().cpu().numpy().astype(np.int64)
         episode_len = episode_len.detach().cpu().numpy()
         hidden_states = hidden_states.detach().clone()
         for path, elen, hidden_state in zip(search_path, episode_len, hidden_states):
@@ -312,7 +312,7 @@ class Tree:
     def load_states(self, search_path: torch.Tensor, episode_len: torch.Tensor) -> torch.Tensor:
         hidden_states = []
 
-        search_path = search_path.detach().cpu().numpy().astype(np.uint8)
+        search_path = search_path.detach().cpu().numpy().astype(np.int64)
         episode_len = episode_len.detach().cpu().numpy()
         for path, elen in zip(search_path, episode_len):
             key = HashKey(path, elen)
@@ -324,8 +324,8 @@ class Tree:
     def run_one_simulation(self, initial_player_id: torch.Tensor, invalid_actions_mask: torch.Tensor):
         search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long().to(self.hparams.device)
         actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
-        player_id = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len, dtype=torch.uint8).to(self.hparams.device)
-        episode_len = torch.zeros(self.hparams.batch_size, dtype=torch.uint8, device=self.hparams.device)
+        player_id = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len, dtype=torch.int64).to(self.hparams.device)
+        episode_len = torch.zeros(self.hparams.batch_size, dtype=torch.int64, device=self.hparams.device)
         max_debug = 10
 
         batch_index = torch.arange(self.hparams.batch_size).to(self.hparams.device)
