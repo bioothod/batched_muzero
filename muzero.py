@@ -176,24 +176,24 @@ class Trainer:
         if self.eval_ds is None:
             return
 
+        start_time = perf_counter()
         hparams = deepcopy(self.hparams)
         hparams.batch_size = len(self.eval_ds.game_states)
 
         train = simulation.Train(self.game_ctl, self.inference, self.logger, self.summary_writer, 'eval', action_selection_fn)
         with torch.no_grad():
-            game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.int64).to(hparams.device)
-            active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
-
-            active_game_states = game_states[active_games_index]
-            active_player_ids = self.eval_ds.game_player_ids[active_games_index]
+            active_game_states = self.eval_ds.game_states
+            active_player_ids = self.eval_ds.game_player_ids
             pred_actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
 
         best_score, good_score = self.eval_ds.evaluate(pred_actions, debug=False)
 
+        eval_time = perf_counter() - start_time
         self.summary_writer.add_scalars('eval/ref_moves_score', {
             'good': good_score,
             'best': best_score,
         }, self.global_step)
+        self.summary_writer.add_scalar('eval/time', eval_time, self.global_step)
 
         if save_if_best and (self.max_best_score is None or best_score > self.max_best_score):
             self.max_best_score = best_score
@@ -251,7 +251,7 @@ class Trainer:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_steps', type=int, default=400, help='Number of steps')
+    parser.add_argument('--num_eval_simulations', type=int, default=400, help='Number of evaluation simulations')
     parser.add_argument('--num_training_steps', type=int, default=40, help='Number of training steps before evaluation')
     parser.add_argument('--game', type=str, required=True, help='Name of the game')
     FLAGS = parser.parse_args()
@@ -261,7 +261,7 @@ def main():
     module = module_loader.GameModule(FLAGS.game, load=True)
 
     epoch = 0
-    module.hparams.num_simulations = FLAGS.num_steps
+    module.hparams.num_simulations = FLAGS.num_eval_simulations
     module.hparams.num_training_steps = FLAGS.num_training_steps
     module.hparams.device = torch.device('cuda:0')
 
