@@ -103,17 +103,14 @@ class Prediction(nn.Module):
 
         self.input_proj = nn.Sequential(
             nn.Flatten(),
-
-            nn.Linear(hparams.repr_conv_res_num_features*np.prod(hparams.observation_shape), hparams.pred_linear_num_features),
-            nn.LeakyReLU(),
-            nn.LayerNorm(hparams.pred_linear_num_features),
         )
 
-        self.output_policy_logits = LinearPrediction(hparams.pred_linear_num_features,
+        num_input_features = hparams.repr_conv_res_num_features*np.prod(hparams.observation_shape)
+        self.output_policy_logits = LinearPrediction(num_input_features,
                                                      hparams.pred_hidden_linear_layers,
                                                      hparams.num_actions,
                                                      hparams.activation)
-        self.output_value = LinearPrediction(hparams.pred_linear_num_features,
+        self.output_value = LinearPrediction(num_input_features,
                                              hparams.pred_hidden_linear_layers,
                                              1,
                                              hparams.activation,
