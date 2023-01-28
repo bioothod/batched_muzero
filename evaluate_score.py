@@ -21,8 +21,8 @@ class EvaluationDataset:
         num_columns = hparams.columns
         self.player_ids = hparams.player_ids
 
-        self.game_states = []
-        self.game_player_ids = []
+        game_states = []
+        game_player_ids = []
         self.best_moves = []
         self.good_moves = []
         range_index = np.arange(num_columns, dtype=np.int32)
@@ -53,11 +53,11 @@ class EvaluationDataset:
 
                 self.good_moves.append(good_moves)
 
-                self.game_states.append(game_state.detach().clone())
-                self.game_player_ids.append(player_id)
+                game_states.append(game_state.detach().clone())
+                game_player_ids.append(player_id)
 
-        self.game_states = torch.stack(self.game_states, 0).to(hparams.device)
-        self.game_player_ids = torch.tensor(self.game_player_ids, dtype=torch.int64).to(hparams.device)
+        self.game_states = torch.stack(game_states, 0).to(hparams.device)
+        self.game_player_ids = torch.tensor(game_player_ids, dtype=torch.int64).to(hparams.device)
 
         self.ref_best_moves = torch.zeros(len(self.best_moves), num_columns, dtype=torch.float32, device=hparams.device)
         self.ref_good_moves = torch.zeros(len(self.good_moves), num_columns, dtype=torch.float32, device=hparams.device)
