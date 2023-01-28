@@ -12,9 +12,8 @@ class GenericHparams:
     batch_size: int
     state_shape: List[int]
     num_actions: int
-    device: torch.device = torch.device('cpu')
+    device: torch.device = torch.device('cuda:0')
     dtype: torch.dtype = torch.float32
-    game_state_dtype: torch.dtype = torch.int8
 
     max_episode_len: int
     num_simulations: int
@@ -38,14 +37,14 @@ class GenericHparams:
 
     num_steps_to_argmax_action_selection: int
 
-    max_training_games: int = 250
+    max_training_games: int = 50
 
     server_port: int = 50051
     num_server_workers: int = 2
 
     num_training_steps: int = 64
     min_lr = 1e-5
-    init_lr = 1e-4
+    init_lr = 5e-4
 
 class ConnectXHparams(GenericHparams):
     checkpoints_dir: str = 'connectx_checkpoints_1'
