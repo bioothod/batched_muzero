@@ -196,14 +196,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--start_id', type=int, default=0, help='Initial id for the clients')
     parser.add_argument('--num_clients', type=int, default=2, help='Number of clients to start')
-    parser.add_argument('--num_steps', type=int, default=400, help='Number of steps')
+    parser.add_argument('--num_simulations', type=int, default=400, help='Number of simulations per step')
     parser.add_argument('--batch_size', type=int, default=1024, help='Simulation batch size')
     parser.add_argument('--game', type=str, required=True, help='Name of the game')
     FLAGS = parser.parse_args()
 
     module = module_loader.GameModule(FLAGS.game, load=False)
     module.hparams.batch_size = FLAGS.batch_size
-    module.hparams.num_simulations = FLAGS.num_steps
+    module.hparams.num_simulations = FLAGS.num_simulations
 
     if torch.cuda.is_available():
         module.hparams.device = 'cuda:0'
