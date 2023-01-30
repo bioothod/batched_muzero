@@ -22,12 +22,12 @@ class GenericHparams:
 
     ucb_value_score_discount: float = 1
     value_discount: float = 1
-    #pb_c_init: float = 1.25
-    pb_c_init: float = 4
+    pb_c_init: float = 1.25
+    #pb_c_init: float = 4
     pb_c_base: float = 19652
     add_exploration_noise: bool = True
-    #dirichlet_alpha: float = 0.3
-    dirichlet_alpha: float = 1
+    #dirichlet_alpha: float = 1
+    dirichlet_alpha: float = 0.3
     exploration_fraction: float = 0.25
 
     player_ids: List[int] = [1, 2]
