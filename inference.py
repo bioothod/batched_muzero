@@ -54,5 +54,5 @@ class GenericInference:
     def initial(self, player_id: torch.Tensor, game_states: torch.Tensor) -> NetworkOutput:
         raise NotImplementedError(f'@initial() method is not implemented')
 
-    def recurrent(self, hidden_states: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
+    def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
         raise NotImplementedError(f'@initial() method is not implemented')

@@ -74,7 +74,7 @@ class Representation(nn.Module):
         super().__init__()
 
         self.input_proj = nn.Sequential(
-            nn.Conv2d(3,
+            nn.Conv2d(2,
                       hparams.repr_conv_res_num_features,
                       hparams.kernel_size,
                       padding='same'),
@@ -92,9 +92,18 @@ class Representation(nn.Module):
 
         self.conv_blocks = nn.Sequential(*res_blocks)
 
+        self.output_proj = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(hparams.repr_features_dropout),
+            nn.Linear(hparams.repr_conv_res_num_features*np.prod(hparams.observation_shape),
+                      hparams.repr_linear_num_features),
+            nn.LayerNorm([hparams.repr_linear_num_features]),
+        )
+
     def forward(self, inputs):
         x = self.input_proj(inputs)
         x = self.conv_blocks(x)
+        x = self.output_proj(x)
         return x
 
 class Prediction(nn.Module):
@@ -105,7 +114,9 @@ class Prediction(nn.Module):
             nn.Flatten(),
         )
 
-        num_input_features = hparams.repr_conv_res_num_features*np.prod(hparams.observation_shape)
+        #num_input_features = hparams.repr_conv_res_num_features*np.prod(hparams.observation_shape)
+        num_input_features = hparams.repr_linear_num_features
+
         self.output_policy_logits = LinearPrediction(num_input_features,
                                                      hparams.pred_hidden_linear_layers,
                                                      hparams.num_actions,
@@ -126,21 +137,15 @@ class Dynamic(nn.Module):
     def __init__(self, hparams: NetworkParams, state_extension: int) -> None:
         super().__init__()
 
-        num_input_features = hparams.repr_conv_res_num_features + state_extension
-
-        res_blocks = []
-        for _ in range(hparams.dyn_conv_num_blocks):
-            block = ResidualBlock(
-                num_features=num_input_features,
-                kernel_size=hparams.kernel_size,
-                activation=hparams.activation)
-            res_blocks.append(block)
-
-        self.conv_blocks = nn.Sequential(*res_blocks)
+        num_input_features = hparams.repr_linear_num_features + state_extension
+        self.output_state = nn.Sequential(
+            nn.Dropout(hparams.dyn_state_dropout),
+            LinearPrediction(num_input_features, hparams.dyn_state_layers, hparams.repr_linear_num_features, hparams.activation, hparams.activation),
+            nn.LayerNorm([hparams.dyn_state_layers[-1]]),
+        )
 
         self.output_reward = nn.Sequential(
-            nn.Flatten(),
-
+            nn.Dropout(hparams.dyn_reward_dropout),
             LinearPrediction(num_input_features*np.prod(hparams.observation_shape),
                              hparams.dyn_reward_linear_layers,
                              1,
@@ -148,17 +153,10 @@ class Dynamic(nn.Module):
                              output_activation=None)
             )
 
-        self.output_next_state = nn.Sequential(
-            nn.Conv2d(num_input_features, hparams.repr_conv_res_num_features, 1),
-            nn.LeakyReLU(0.01),
-            nn.LayerNorm([hparams.repr_conv_res_num_features]+hparams.observation_shape)
-        )
-
     def forward(self, inputs):
-        x = self.conv_blocks(inputs)
+        x = self.output_state(inputs)
         reward = self.output_reward(x).squeeze(1)
-        next_state = self.output_next_state(x)
-        return next_state, reward
+        return x, reward
 
 class Inference(GenericInference):
     def __init__(self, game_ctl: module_loader.GameModule, logger: logging.Logger):
@@ -171,7 +169,7 @@ class Inference(GenericInference):
         self.representation = Representation(game_ctl.network_hparams).to(self.hparams.device)
         self.prediction = Prediction(game_ctl.network_hparams).to(self.hparams.device)
 
-        state_extension = len(game_ctl.hparams.player_ids) + game_ctl.hparams.num_actions
+        state_extension = game_ctl.hparams.num_actions
         self.dynamic = Dynamic(game_ctl.network_hparams, state_extension).to(self.hparams.device)
 
         self.models = [self.representation, self.prediction, self.dynamic]
@@ -195,13 +193,23 @@ class Inference(GenericInference):
 
         states = torch.zeros(1 + len(self.hparams.player_ids), batch_size, *input_shape).to(self.hparams.device)
 
-        player_id_exp = player_id.unsqueeze(1)
-        player_id_exp = player_id_exp.tile([1, np.prod(input_shape)]).view([batch_size] + input_shape).to(self.hparams.device)
-        states[0, ...] = player_id_exp
-        for player_index, local_player_id in enumerate(self.hparams.player_ids):
-            index = game_states == local_player_id
+        # states design:
+        #  0: set 1 where current player has its marks
+        #  1: set 1 where the other player has its marks
+
+        def get_index_for_player_id(game_states, player_id):
+            index = game_states == player_id
             index = index.squeeze(1)
-            states[1 + player_index, index] = 1
+            return index
+
+        set_player_id_index = 0
+        states[set_player_id_index, get_index_for_player_id(game_states, player_id)] = 1
+        set_player_id_index += 1
+
+        for local_player_id in self.hparams.player_ids:
+            if local_player_id != player_id:
+                states[set_player_id_index, get_index_for_player_id(game_states, local_player_id)] = 1
+                set_player_id_index += 1
 
         states = torch.transpose(states, 1, 0)
         return states
@@ -215,9 +223,8 @@ class Inference(GenericInference):
         #self.logger.info(f'inference: initial: game_states: {game_states.shape}: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}')
         return NetworkOutput(reward=rewards, hidden_state=hidden_states, policy_logits=policy_logits, value=values)
 
-    def recurrent(self, hidden_states: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
+    def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
         actions_exp = F.one_hot(actions, self.hparams.num_actions)
-        player_states = F.one_hot(player_id.long()-1, len(self.hparams.player_ids))
 
         ap = torch.cat([actions_exp, player_states], 1)
         ap = ap.unsqueeze(2).unsqueeze(3)

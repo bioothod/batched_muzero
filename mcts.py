@@ -375,7 +375,7 @@ class Tree:
 
             last_actions = actions.gather(1, last_episode).squeeze(1)
             last_player_id = player_id.gather(1, last_episode).squeeze(1)
-            out = self.inference.recurrent(hidden_states, last_player_id, last_actions)
+            out = self.inference.recurrent(hidden_states, last_actions)
             self.store_states(search_path, episode_len+1, out.hidden_state)
 
 
