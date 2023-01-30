@@ -130,7 +130,7 @@ class Trainer:
             scale = torch.ones_like(hidden_states, device=out.hidden_state.device)*0.5
             hidden_states = scale_gradient(hidden_states, scale)
 
-            out = self.inference.recurrent(hidden_states, player_id[:, step_idx], actions[:, step_idx-1])
+            out = self.inference.recurrent(hidden_states, actions[:, step_idx-1])
 
             policy_loss = self.ce_loss(out.policy_logits, children_visits[:, :, step_idx])
             value_loss = self.scalar_loss(out.value, values[:, step_idx])

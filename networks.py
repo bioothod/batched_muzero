@@ -141,12 +141,12 @@ class Dynamic(nn.Module):
         self.output_state = nn.Sequential(
             nn.Dropout(hparams.dyn_state_dropout),
             LinearPrediction(num_input_features, hparams.dyn_state_layers, hparams.repr_linear_num_features, hparams.activation, hparams.activation),
-            nn.LayerNorm([hparams.dyn_state_layers[-1]]),
+            nn.LayerNorm([hparams.repr_linear_num_features]),
         )
 
         self.output_reward = nn.Sequential(
             nn.Dropout(hparams.dyn_reward_dropout),
-            LinearPrediction(num_input_features*np.prod(hparams.observation_shape),
+            LinearPrediction(hparams.repr_linear_num_features,
                              hparams.dyn_reward_linear_layers,
                              1,
                              hparams.activation,
@@ -191,7 +191,7 @@ class Inference(GenericInference):
         batch_size = len(game_states)
         input_shape = list(game_states.shape[1:]) # remove batch size
 
-        states = torch.zeros(1 + len(self.hparams.player_ids), batch_size, *input_shape).to(self.hparams.device)
+        states = torch.zeros(len(self.hparams.player_ids), batch_size, *input_shape).to(self.hparams.device)
 
         # states design:
         #  0: set 1 where current player has its marks
@@ -203,11 +203,12 @@ class Inference(GenericInference):
             return index
 
         set_player_id_index = 0
-        states[set_player_id_index, get_index_for_player_id(game_states, player_id)] = 1
+        states[set_player_id_index, get_index_for_player_id(game_states, player_id[0])] = 1
         set_player_id_index += 1
 
         for local_player_id in self.hparams.player_ids:
-            if local_player_id != player_id:
+            # only initial inference calls @create_states(), so player_id is the same inside given tensor
+            if local_player_id != player_id[0]:
                 states[set_player_id_index, get_index_for_player_id(game_states, local_player_id)] = 1
                 set_player_id_index += 1
 
@@ -226,12 +227,8 @@ class Inference(GenericInference):
     def recurrent(self, hidden_states: torch.Tensor, actions: torch.Tensor) -> NetworkOutput:
         actions_exp = F.one_hot(actions, self.hparams.num_actions)
 
-        ap = torch.cat([actions_exp, player_states], 1)
-        ap = ap.unsqueeze(2).unsqueeze(3)
-        ap = torch.tile(ap, [1, 1] + self.game_ctl.network_hparams.observation_shape)
-
         #self.logger.info(f'hidden_states: {hidden_states.shape}, player_states: {player_states.shape}, actions_exp: {actions_exp.shape}')
-        dyn_inputs = torch.cat([hidden_states, ap], 1)
+        dyn_inputs = torch.cat([hidden_states, actions_exp], 1)
         new_hidden_states, rewards = self.dynamic(dyn_inputs)
         policy_logits, values = self.prediction(new_hidden_states)
         #self.logger.info(f'inference: recurrent: hidden_states: {hidden_states.shape}, policy_logits: {policy_logits.shape}, rewards: {rewards.shape}, values: {values.shape}')
