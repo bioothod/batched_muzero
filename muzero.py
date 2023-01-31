@@ -101,6 +101,7 @@ class Trainer:
 
     def training_step(self, epoch: int, sample: simulation.TrainElement):
         out = self.inference.initial(sample.player_ids[:, 0], sample.game_states)
+
         policy_loss = self.ce_loss(out.policy_logits, sample.children_visits[:, :, 0])
         value_loss = self.scalar_loss(out.value, sample.values[:, 0])
         reward_loss = self.scalar_loss(out.reward, out.reward)
@@ -109,13 +110,17 @@ class Trainer:
         iteration_loss = scale_gradient(iteration_loss, 1/sample.sample_len)
         total_loss = torch.mean(iteration_loss)
 
+        policy_loss_mean = policy_loss.mean()
+        value_loss_mean = value_loss.mean()
+        reward_loss_mean = reward_loss.mean()
+
         self.summary_writer.add_scalars('train/initial_losses', {
-                'policy': policy_loss.mean(),
-                'value': value_loss.mean(),
+                'policy': policy_loss_mean,
+                'value': value_loss_mean,
                 'total': total_loss,
         }, self.global_step)
 
-        batch_index = torch.arange(len(sample.player_ids))
+        batch_index = torch.arange(len(sample))
         for step_idx in range(1, sample.sample_len.max()):
             len_idx = step_idx < sample.sample_len[batch_index]
             batch_index = batch_index[len_idx]
@@ -123,23 +128,32 @@ class Trainer:
             actions = sample.actions[batch_index]
             values = sample.values[batch_index]
             children_visits = sample.children_visits[batch_index]
-            last_rewards = sample.last_rewards[batch_index]
-            player_id = sample.player_ids[batch_index]
+            rewards = sample.rewards[batch_index]
 
             hidden_states = out.hidden_state[len_idx]
             scale = torch.ones_like(hidden_states, device=out.hidden_state.device)*0.5
             hidden_states = scale_gradient(hidden_states, scale)
 
-            out = self.inference.recurrent(hidden_states, actions[:, step_idx-1])
+            out = self.inference.recurrent(hidden_states, actions[:, step_idx])
 
             policy_loss = self.ce_loss(out.policy_logits, children_visits[:, :, step_idx])
             value_loss = self.scalar_loss(out.value, values[:, step_idx])
-            reward_loss = self.scalar_loss(out.reward, last_rewards[:, step_idx])
+            reward_loss = self.scalar_loss(out.reward, rewards[:, step_idx])
 
             iteration_loss = policy_loss + value_loss + reward_loss
             iteration_loss = scale_gradient(iteration_loss, 1/sample_len)
 
             total_loss += torch.mean(iteration_loss)
+            policy_loss_mean += policy_loss.mean()
+            value_loss_mean += value_loss.mean()
+            reward_loss_mean += reward_loss.mean()
+
+        self.summary_writer.add_scalars('train/final_losses', {
+                'policy': policy_loss_mean,
+                'reward': reward_loss_mean,
+                'value': value_loss_mean,
+                'total': total_loss,
+        }, self.global_step)
 
         return total_loss
 
@@ -253,6 +267,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_eval_simulations', type=int, default=400, help='Number of evaluation simulations')
     parser.add_argument('--num_training_steps', type=int, default=40, help='Number of training steps before evaluation')
+    parser.add_argument('--checkpoints_dir', type=str, required=True, help='Checkpoints directory')
     parser.add_argument('--game', type=str, required=True, help='Name of the game')
     FLAGS = parser.parse_args()
 
@@ -263,6 +278,7 @@ def main():
     epoch = 0
     module.hparams.num_simulations = FLAGS.num_eval_simulations
     module.hparams.num_training_steps = FLAGS.num_training_steps
+    module.hparams.checkpoints_dir = FLAGS.checkpoints_dir
     module.hparams.device = torch.device('cuda:0')
 
     logfile = os.path.join(module.hparams.checkpoints_dir, 'muzero.log')
