@@ -16,12 +16,15 @@ import mcts
 @dataclass
 class TrainElement:
     values: torch.Tensor
-    last_rewards: torch.Tensor
+    rewards: torch.Tensor
     children_visits: torch.Tensor
     game_states: torch.Tensor
     actions: torch.Tensor
     sample_len: torch.Tensor
     player_ids: torch.Tensor
+
+    def __len__(self) -> int:
+        return len(self.values)
 
     @staticmethod
     def from_dict(sample_dict: Dict[str, torch.Tensor]) -> 'TrainElement':
@@ -30,7 +33,7 @@ class TrainElement:
             actions = sample_dict['actions'],
             sample_len = sample_dict['sample_len'],
             values = sample_dict['values'],
-            last_rewards = sample_dict['last_rewards'],
+            rewards = sample_dict['rewards'],
             children_visits = sample_dict['children_visits'],
             player_ids = sample_dict['player_ids'],
         )
@@ -38,7 +41,7 @@ class TrainElement:
 
     def to(self, device):
         self.values = self.values.to(device)
-        self.last_rewards = self.last_rewards.to(device)
+        self.rewards = self.rewards.to(device)
         self.children_visits = self.children_visits.to(device)
         self.game_states = self.game_states.to(device)
         self.actions = self.actions.to(device)
@@ -50,11 +53,11 @@ def roll_by_gather(mat, dim, shifts: torch.LongTensor):
     # assumes 2D array
     n_rows, n_cols = mat.shape
 
-    if dim==0:
+    if dim == 0:
         arange1 = torch.arange(n_rows, device=shifts.device).view((n_rows, 1)).repeat((1, n_cols))
         arange2 = (arange1 - shifts) % n_rows
         return torch.gather(mat, 0, arange2)
-    elif dim==1:
+    elif dim == 1:
         arange1 = torch.arange(n_cols, device=shifts.device).view(( 1,n_cols)).repeat((n_rows,1))
         arange2 = (arange1 - shifts) % n_cols
         return torch.gather(mat, 1, arange2)
@@ -126,13 +129,13 @@ class GameStats:
 
         self.episode_len[index] += 1
 
-    def update_last_rewards(self, win_index: torch.Tensor):
+    def update_rewards(self, win_index: torch.Tensor):
         episode_len = self.episode_len[win_index].long()
         self.rewards[win_index, episode_len-1] = -1
 
     def make_target(self, start_index: torch.Tensor) -> List[TrainElement]:
         target_values = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=start_index.device)
-        target_last_rewards = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=start_index.device)
+        target_rewards = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=start_index.device)
         target_children_visits = torch.zeros(len(start_index), self.hparams.num_actions, self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=start_index.device)
         taken_actions = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=start_index.device)
         player_ids = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=torch.int64, device=start_index.device)
@@ -148,9 +151,9 @@ class GameStats:
             raise ValueError(msg)
 
 
-        for unroll_index in range(0, self.hparams.num_unroll_steps+1):
-            current_index = start_index + unroll_index
-            bootstrap_index = current_index + self.hparams.td_steps
+        for unroll_step in range(0, self.hparams.num_unroll_steps+1):
+            start_unroll_index = start_index + unroll_step
+            bootstrap_index = start_unroll_index + self.hparams.td_steps
 
             if bootstrap_index.device != self.episode_len.device:
                 self.logger.critical(f'bootstrap_index: {bootstrap_index.device}, self.episode_len: {self.episode_len.device}')
@@ -193,33 +196,31 @@ class GameStats:
                 raise ValueError(msg)
 
             discount_mult = roll_by_gather(discount_mult, 1, start_index.unsqueeze(1))
-            discount_mult = torch.where(all_rewards_index < current_index.unsqueeze(1), 0, discount_mult)
+            discount_mult = torch.where(all_rewards_index < start_unroll_index.unsqueeze(1), 0, discount_mult)
             discount_mult = torch.where(all_rewards_index >= last_index.unsqueeze(1), 0, discount_mult)
-
-            masked_rewards = torch.where(all_rewards_index < current_index.unsqueeze(1), 0, self.rewards)
-            masked_rewards = torch.where(all_rewards_index >= last_index.unsqueeze(1), 0, masked_rewards)
 
             discounted_rewards = self.rewards.float() * discount_mult
             discounted_rewards = discounted_rewards.sum(1)
             values += discounted_rewards
 
-            valid_index = current_index < self.episode_len
+            start_unroll_valid_bool_index = start_unroll_index < self.episode_len
+            start_unroll_valid_index = start_unroll_index[start_unroll_valid_bool_index]
 
-            current_valid_index = current_index[valid_index]
-            target_values[valid_index, unroll_index] = values[valid_index]
-            target_children_visits[valid_index, :, unroll_index] = self.children_visits[valid_index, :, current_valid_index].float()
+            target_values[:, unroll_step] = values
+            target_children_visits[start_unroll_valid_bool_index, :, unroll_step] = self.children_visits[start_unroll_valid_bool_index, :, start_unroll_valid_index].float()
+            player_ids[start_unroll_valid_bool_index, unroll_step] = self.player_ids[start_unroll_valid_bool_index, start_unroll_valid_index].long()
 
-            if unroll_index > 0:
-                target_last_rewards[valid_index, unroll_index] = self.rewards[valid_index, current_valid_index-1].float()
-            taken_actions[valid_index, unroll_index] = self.actions[valid_index, current_valid_index].long()
-            player_ids[valid_index, unroll_index] = self.player_ids[valid_index, current_valid_index].long()
-            sample_len[valid_index] += 1
+            if unroll_step > 0:
+                target_rewards[start_unroll_valid_bool_index, unroll_step] = self.rewards[start_unroll_valid_bool_index, start_unroll_valid_index].float()
+                taken_actions[start_unroll_valid_bool_index, unroll_step] = self.actions[start_unroll_valid_bool_index, start_unroll_valid_index].long()
+
+            sample_len[start_unroll_valid_bool_index] += 1
 
         samples = []
         for i in range(len(target_values)):
             elm = TrainElement(
                 values=target_values[i],
-                last_rewards=target_last_rewards[i],
+                rewards=target_rewards[i],
                 children_visits=target_children_visits[i],
                 game_states=game_states[i],
                 actions=taken_actions[i],
@@ -314,8 +315,8 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int,
     active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
 
     while True:
-        active_game_states = game_states[active_games_index]
-        active_player_ids = player_ids[active_games_index]
+        active_game_states = game_states[active_games_index].detach().clone()
+        active_player_ids = player_ids[active_games_index].detach().clone()
         actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
         new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
         game_states[active_games_index] = new_game_states.detach().clone()
@@ -340,7 +341,7 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int,
 
         win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
         other_player_id = mcts.player_id_change(hparams, torch.tensor(player_id)).item()
-        train.game_stats[other_player_id].update_last_rewards(win_index)
+        train.game_stats[other_player_id].update_rewards(win_index)
 
         train.update_train_steps()
 
