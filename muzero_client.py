@@ -207,6 +207,8 @@ def main():
     module.hparams.batch_size = FLAGS.batch_size
     module.hparams.num_simulations = FLAGS.num_simulations
 
+    os.makedirs(module.hparams.checkpoints_dir, exist_ok=True)
+
     if torch.cuda.is_available():
         module.hparams.device = 'cuda:0'
     else:
