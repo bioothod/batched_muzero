@@ -213,7 +213,7 @@ class Trainer:
             self.max_best_score = best_score
             checkpoint_path = os.path.join(self.hparams.checkpoints_dir, f'muzero_{best_score:.1f}.ckpt')
             self.save(checkpoint_path)
-            self.logger.info(f'stored checkpoint: best_score: {best_score:.1f}, checkpoint: {checkpoint_path}')
+            self.logger.info(f'stored checkpoint: generation: {self.global_step}, best_score: {best_score:.1f}, checkpoint: {checkpoint_path}')
 
         return best_score, good_score
 
