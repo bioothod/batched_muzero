@@ -80,7 +80,6 @@ class Tree:
     reward: torch.Tensor
     value_sum: torch.Tensor
     prior: torch.Tensor
-    player_id: torch.Tensor
     expanded: torch.Tensor
     saved_children_index: torch.Tensor
     hidden_states: Dict[HashKey, torch.Tensor]
@@ -108,8 +107,6 @@ class Tree:
         self.prior = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.float32).to(hparams.device)
         self.reward = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.float32).to(hparams.device)
         self.expanded = torch.zeros([self.hparams.batch_size, max_size]).bool().to(hparams.device)
-        self.player_id = torch.zeros([self.hparams.batch_size, max_size], dtype=torch.int64).to(hparams.device)
-        self.player_id[:, 0] = player_id.detach().clone().to(self.hparams.device)
         self.hidden_states = {}
 
     def new_children_index(self, batch_index: torch.Tensor) -> torch.Tensor:
@@ -158,7 +155,6 @@ class Tree:
         #                  f'children_index:\n{children_index[:max_debug]}')
 
         self.expanded.scatter_(1, parent_index, True)
-        self.player_id.scatter_(1, parent_index, player_id.unsqueeze(1))
 
         probs = torch.softmax(policy_logits, 1).type(self.prior.dtype)
         self.prior.scatter_(1, children_index, probs)
@@ -170,7 +166,8 @@ class Tree:
         visit_count = self.visit_count[batch_index].gather(1, children_index)
         value_sum = self.value_sum[batch_index].gather(1, children_index)
 
-        return torch.where(visit_count == 0, 0, value_sum / visit_count)
+        value = torch.where(visit_count == 0, 0, value_sum / visit_count)
+        return self.min_max_stats.normalize(value)
 
     def add_exploration_noise(self, batch_index: torch.Tensor, children_index: torch.Tensor, exploration_fraction: float):
         concentration = torch.ones([len(batch_index), self.hparams.num_actions]).float() * self.hparams.dirichlet_alpha
@@ -253,14 +250,11 @@ class Tree:
 
     def backpropagate(self, player_id: torch.Tensor, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
         batch_index_full = torch.arange(self.hparams.batch_size)
+        node_multiplier = torch.ones(len(batch_index_full), dtype=torch.float32, device=self.hparams.device)
         for current_episode_len in torch.arange(episode_len.max(), 0, step=-1).to(self.hparams.device):
             batch_index = batch_index_full[episode_len >= current_episode_len].to(self.hparams.device)
 
             node_index = search_path[batch_index, current_episode_len]
-
-            stored_player_id_for_step = self.player_id[batch_index, node_index]
-            game_player_id_for_step = player_id[batch_index, current_episode_len-1]
-            node_multiplier = torch.where(stored_player_id_for_step == game_player_id_for_step, 1., -1.).type(self.reward.dtype)
 
             # debug_max = 10
             # self.logger.info(f'backpropagate: '
@@ -278,14 +272,17 @@ class Tree:
             #                  f'current_episode_len: {current_episode_len}/{episode_len.max()}/{episode_len[:debug_max]}\n'
             #                  f'value: {value[batch_index].shape}/{value.shape}\n{value[batch_index][:debug_max]}/{value[:debug_max]}')
 
-            self.value_sum[batch_index, node_index] += value[batch_index] * node_multiplier
+            current_value = value[batch_index]
+
+            self.value_sum[batch_index, node_index] += current_value * node_multiplier[batch_index]
             # self.logger.info(f'backpropagate: node_multiplier: {node_multiplier}, value_sum:\n{self.value_sum[batch_index]}')
             self.visit_count[batch_index, node_index] += 1
 
-            value[batch_index] = self.reward[batch_index, node_index] + self.hparams.value_discount * value[batch_index]
+            value[batch_index] = self.reward[batch_index, node_index] + self.hparams.value_discount * current_value
             #value[batch_index] = self.reward[batch_index, node_index] * node_multiplier + self.hparams.value_discount * value[batch_index]
-            value[batch_index] = (self.reward[batch_index, node_index] + self.hparams.value_discount * value[batch_index]) * node_multiplier
             self.min_max_stats.update(value)
+
+            node_multiplier[batch_index] *= -1
 
         self.value_sum[:, 0] += value
         self.visit_count[:, 0] += 1
@@ -398,32 +395,3 @@ class Tree:
             raise
 
         return search_path, episode_len
-
-def main():
-    player_id = 1
-    hparams = Hparams()
-
-    game_states = torch.zeros([hparams.batch_size, 1, 6, 7]).float().cpu()
-
-    logger = setup_logger('mcts', logfile='test.log', log_to_stdout=True)
-    inference = MCTSInference(hparams, logger)
-    out = inference.initial(game_states)
-
-    tree = Tree(hparams, inference, logger)
-    tree.player_id[:, 0] = player_id
-
-    batch_index = torch.arange(hparams.batch_size).long().to(hparams.device)
-    node_index = torch.zeros(hparams.batch_size).long().to(hparams.device)
-
-    episode_len = torch.ones(len(node_index)).long().to(hparams.device)
-    search_path = torch.zeros(len(node_index), 1).long().to(hparams.device)
-    tree.store_states(search_path, episode_len, out.hidden_state)
-
-    player_id = torch.ones_like(node_index) * player_id
-    tree.expand(player_id, batch_index, node_index, out.policy_logits)
-
-    for _ in range(hparams.num_simulations):
-        search_path, episode_len = tree.run_one()
-
-if __name__ == '__main__':
-    main()
