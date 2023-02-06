@@ -6,6 +6,7 @@ import itertools
 import logging
 import pickle
 import os
+import random
 import time
 
 from collections import defaultdict
@@ -46,7 +47,7 @@ def train_element_collate_fn(samples: List[simulation.TrainElement]):
 
     return simulation.TrainElement(**converted_dict)
 
-def action_selection_fn(children_visit_counts: torch.Tensor):
+def action_selection_fn(children_visit_counts: torch.Tensor, episode_len: torch.Tensor):
     actions = torch.argmax(children_visit_counts, 1)
     return actions
 
@@ -99,29 +100,38 @@ class Trainer:
     def close(self):
         self.grpc_server.wait_for_termination()
 
-    def training_step(self, epoch: int, sample: simulation.TrainElement):
+    def policy_loss(self, policy_logits: torch.Tensor, children_visit_counts_for_step: torch.Tensor) -> torch.Tensor:
+        # children_visit_counts: [B, Nactions]
+        children_visits_sum = children_visit_counts_for_step.sum(1, keepdim=True)
+        action_probs = children_visit_counts_for_step / children_visits_sum
+        loss = self.ce_loss(policy_logits, action_probs)
+        return loss
+
+    def training_step(self, sample: simulation.TrainElement):
+        sample_len_max = sample.sample_len.max().item()
+        sample.sample_len = sample.sample_len.float()
+
         out = self.inference.initial(sample.player_ids[:, 0], sample.game_states)
 
-        policy_loss = self.ce_loss(out.policy_logits, sample.children_visits[:, :, 0])
+        policy_loss = self.policy_loss(out.policy_logits, sample.children_visits[:, :, 0])
         value_loss = self.scalar_loss(out.value, sample.values[:, 0])
-        reward_loss = self.scalar_loss(out.reward, out.reward)
 
-        iteration_loss = policy_loss + value_loss + reward_loss
+        iteration_loss = policy_loss + value_loss
         iteration_loss = scale_gradient(iteration_loss, 1/sample.sample_len)
-        total_loss = torch.mean(iteration_loss)
+        total_loss_mean = torch.mean(iteration_loss)
 
         policy_loss_mean = policy_loss.mean()
         value_loss_mean = value_loss.mean()
-        reward_loss_mean = reward_loss.mean()
+        reward_loss_mean = 0
 
         self.summary_writer.add_scalars('train/initial_losses', {
                 'policy': policy_loss_mean,
                 'value': value_loss_mean,
-                'total': total_loss,
+                'total': total_loss_mean,
         }, self.global_step)
 
         batch_index = torch.arange(len(sample))
-        for step_idx in range(1, sample.sample_len.max()):
+        for step_idx in range(1, sample_len_max):
             len_idx = step_idx < sample.sample_len[batch_index]
             batch_index = batch_index[len_idx]
             sample_len = sample.sample_len[batch_index]
@@ -131,19 +141,19 @@ class Trainer:
             rewards = sample.rewards[batch_index]
 
             hidden_states = out.hidden_state[len_idx]
-            scale = torch.ones_like(hidden_states, device=out.hidden_state.device)*0.5
+            scale = torch.ones_like(hidden_states, device=out.hidden_state.device) * 0.5
             hidden_states = scale_gradient(hidden_states, scale)
 
-            out = self.inference.recurrent(hidden_states, actions[:, step_idx])
+            out = self.inference.recurrent(hidden_states, actions[:, step_idx-1])
 
-            policy_loss = self.ce_loss(out.policy_logits, children_visits[:, :, step_idx])
+            policy_loss = self.policy_loss(out.policy_logits, children_visits[:, :, step_idx])
             value_loss = self.scalar_loss(out.value, values[:, step_idx])
-            reward_loss = self.scalar_loss(out.reward, rewards[:, step_idx])
+            reward_loss = self.scalar_loss(out.reward, rewards[:, step_idx-1])
 
             iteration_loss = policy_loss + value_loss + reward_loss
             iteration_loss = scale_gradient(iteration_loss, 1/sample_len)
 
-            total_loss += torch.mean(iteration_loss)
+            total_loss_mean += torch.mean(iteration_loss)
             policy_loss_mean += policy_loss.mean()
             value_loss_mean += value_loss.mean()
             reward_loss_mean += reward_loss.mean()
@@ -152,27 +162,27 @@ class Trainer:
                 'policy': policy_loss_mean,
                 'reward': reward_loss_mean,
                 'value': value_loss_mean,
-                'total': total_loss,
+                'total': total_loss_mean,
         }, self.global_step)
 
-        return total_loss
+        return total_loss_mean
 
-    def run_training(self, epoch: int):
+    def run_training(self):
         while self.replay_buffer.num_games() == 0:
             time.sleep(1)
 
         self.inference.train(True)
 
-        samples = self.replay_buffer.sample(batch_size=self.hparams.batch_size*self.hparams.num_training_steps)
-        data_loader = torch.utils.data.DataLoader(samples, batch_size=self.hparams.batch_size, shuffle=True, drop_last=False, collate_fn=train_element_collate_fn)
-
-        for sample in data_loader:
-            self.inference.zero_grad()
-            for opt in self.optimizers:
-                opt.zero_grad()
-
+        for _ in range(self.hparams.num_training_steps):
+            sample = self.replay_buffer.sample(batch_size=self.hparams.batch_size)[:self.hparams.batch_size]
+            random.shuffle(sample)
+            sample = train_element_collate_fn(sample)
             sample = sample.to(self.hparams.device)
-            total_loss = self.training_step(epoch, sample)
+
+            # do not need to call optimizers zero_grad() because we are settig grads to zero in every model
+            self.inference.zero_grad()
+
+            total_loss = self.training_step(sample)
 
             total_loss.backward()
 
@@ -293,8 +303,8 @@ def main():
 
     trainer = Trainer(module, logger, eval_ds)
 
-    for epoch in itertools.count():
-        trainer.run_training(epoch)
+    while True:
+        trainer.run_training()
 
 if __name__ == '__main__':
     main()
