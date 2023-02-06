@@ -140,6 +140,7 @@ class MuzeroCollectionClient:
                     for i in range(3):
                         valid_index = game_stat.episode_len > i
                         children_visits = game_stat.children_visits[valid_index, :, i].float()
+                        children_visits = children_visits / children_visits.sum(1, keepdim=True)
                         actions = game_stat.actions[valid_index, i]
 
                         if len(children_visits) > 0:
