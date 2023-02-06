@@ -26,8 +26,8 @@ class GenericHparams:
     #pb_c_init: float = 4
     pb_c_base: float = 19652
     add_exploration_noise: bool = True
-    #dirichlet_alpha: float = 1
-    dirichlet_alpha: float = 0.3
+    dirichlet_alpha: float = 1
+    #dirichlet_alpha: float = 0.3
     exploration_fraction: float = 0.25
 
     player_ids: List[int] = [1, 2]
@@ -36,8 +36,9 @@ class GenericHparams:
     td_steps: int
 
     num_steps_to_argmax_action_selection: int
+    action_selection_temperature: float = 1
 
-    max_training_games: int = 50
+    max_training_games: int = 10
 
     server_port: int = 50051
     num_server_workers: int = 2
@@ -60,7 +61,8 @@ class ConnectXHparams(GenericHparams):
     max_episode_len: int = 42
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 30000
+    num_steps_to_argmax_action_selection: int = 30
+    action_selection_temperature: float = 1.75
 
     num_unroll_steps: int = 5
     td_steps: int = 42
@@ -79,7 +81,7 @@ class TicTacToeHparams(GenericHparams):
     max_episode_len: int = 9
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 2000
+    num_steps_to_argmax_action_selection: int = 4
 
 
     num_unroll_steps: int = 5
