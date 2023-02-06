@@ -69,16 +69,13 @@ class MuzeroCollectionClient:
             tensorboard_log_dir = os.path.join(self.game_ctl.hparams.checkpoints_dir, 'tensorboard_logs')
             self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir)
 
-    def action_selection_fn(self, children_visit_counts: torch.Tensor):
-        if self.generation >= self.game_ctl.hparams.num_steps_to_argmax_action_selection:
-            actions = torch.argmax(children_visit_counts, 1)
-        else:
-            temperature = 1.0 # play according to softmax distribution
+    def action_selection_fn(self, children_visit_counts: torch.Tensor, episode_len: torch.Tensor) -> torch.Tensor:
+        actions_argmax = torch.argmax(children_visit_counts, 1)
 
-            dist = torch.pow(children_visit_counts, 1 / temperature)
-            actions = torch.multinomial(dist, 1)
-            actions = actions.squeeze(1)
+        dist = torch.pow(children_visit_counts.float(), 1. / self.game_ctl.hparams.action_selection_temperature)
+        actions_dist = torch.multinomial(dist, 1).squeeze(1)
 
+        actions = torch.where(episode_len >= self.game_ctl.hparams.num_steps_to_argmax_action_selection, actions_argmax, actions_dist)
         return actions
 
     def update_weights(self):
