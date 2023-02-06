@@ -1,6 +1,6 @@
 import torch
 
-class Hparams:
+class GameHparams:
     rows: int = 3
     columns: int = 3
     inarow: int = 3
@@ -16,13 +16,13 @@ class Hparams:
 
 
 @torch.jit.script
-def invalid_actions_mask(hparams: Hparams, games: torch.Tensor):
+def invalid_actions_mask(hparams: GameHparams, games: torch.Tensor):
     batch_size = len(games)
     flat_games = games.view(batch_size, -1)
     return flat_games != 0
 
 @torch.jit.script
-def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor):
+def check_reward(hparams: GameHparams, games: torch.Tensor, player_id: torch.Tensor):
     player_id = player_id.unsqueeze(1).unsqueeze(1)
     columns_end = hparams.columns - (hparams.inarow - 1)
     rows_end = hparams.rows - (hparams.inarow - 1)
@@ -68,7 +68,7 @@ def check_reward(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor)
     return rewards, dones
 
 @torch.jit.script
-def step_games(hparams: Hparams, games: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor):
+def step_games(hparams: GameHparams, games: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor):
     num_games = len(games)
     flat_games = games.view([num_games, -1])
     actions = actions.long()
