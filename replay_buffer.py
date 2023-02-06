@@ -54,7 +54,7 @@ class ReplayBuffer:
         all_games = self.flatten_games()
         device = all_games[0].game_states.device
 
-        samples = []
+        samples = set()
         while len(samples) < batch_size:
             game_stat = random.choice(all_games)
 
@@ -65,6 +65,6 @@ class ReplayBuffer:
             #self.logger.info(f'epoch: {epoch}: start_pos: {start_pos.shape}: {start_pos[:10]}, episode_len: {game_stat.episode_len[:10]}')
 
             elms = game_stat.make_target(start_pos)
-            samples += elms
+            samples.update(elms)
 
-        return samples
+        return list(samples)
