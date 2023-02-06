@@ -26,6 +26,14 @@ class TrainElement:
     def __len__(self) -> int:
         return len(self.values)
 
+    def __hash__(self) -> int:
+        state_data = self.game_states.detach().cpu().numpy().tostring()
+        action_data = self.actions.detach().cpu().numpy().tostring()
+        return hash((state_data, action_data))
+
+    def __eq__(self, other: 'TrainElement') -> bool:
+        return torch.all(self.game_states == other.game_states) and torch.all(self.values == other.values) and torch.all(self.actions == other.actions)
+
     @staticmethod
     def from_dict(sample_dict: Dict[str, torch.Tensor]) -> 'TrainElement':
         return TrainElement(
@@ -288,13 +296,10 @@ class Train:
         node_index = torch.zeros(batch_size).long().to(self.hparams.device)
         children_index = tree.children_index(batch_index, node_index)
         children_visit_counts = tree.visit_count[batch_index].gather(1, children_index).float()
-        children_sum_visits = children_visit_counts.sum(1)
-        children_visits = children_visit_counts / children_sum_visits.unsqueeze(1)
         root_values = tree.value(batch_index, node_index.unsqueeze(1)).squeeze(1)
 
-        actions = self.action_selection_fn(children_visit_counts)
+        actions = self.action_selection_fn(children_visit_counts, episode_len)
 
-        actions = actions.type(torch.int64)
         # max_debug = 10
         # self.logger.info(f'train_steps: {self.num_train_steps}, '
         #                  f'children_index:\n{children_index[:max_debug]}\n'
@@ -303,7 +308,7 @@ class Train:
         #                  f'children_visits:\n{children_visits[:max_debug]}\n'
         #                  f'root_values: {root_values.shape}\n{root_values[:max_debug]}\n'
         #                  f'actions:\n{actions[:max_debug]}')
-        return actions, children_visits, root_values
+        return actions, children_visit_counts, root_values
 
     def update_train_steps(self):
         self.num_train_steps += 1
