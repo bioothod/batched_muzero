@@ -22,8 +22,8 @@ class GenericHparams:
 
     ucb_value_score_discount: float = 1
     value_discount: float = 1
-    #pb_c_init: float = 1.25
-    pb_c_init: float = 4
+    pb_c_init: float = 1.25
+    #pb_c_init: float = 4
     pb_c_base: float = 19652
     add_exploration_noise: bool = True
     dirichlet_alpha: float = 1
@@ -38,7 +38,7 @@ class GenericHparams:
     num_steps_to_argmax_action_selection: int
     action_selection_temperature: float = 1
 
-    max_training_games: int = 10
+    max_training_games: int = 5
 
     server_port: int = 50051
     num_server_workers: int = 2
@@ -61,8 +61,8 @@ class ConnectXHparams(GenericHparams):
     max_episode_len: int = 42
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 20
-    action_selection_temperature: float = 1
+    num_steps_to_argmax_action_selection: int = 30
+    action_selection_temperature: float = 1.75
 
     num_unroll_steps: int = 5
     td_steps: int = 42
