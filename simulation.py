@@ -137,9 +137,9 @@ class GameStats:
 
         self.episode_len[index] += 1
 
-    def update_rewards(self, win_index: torch.Tensor):
+    def update_last_reward_and_values(self, win_index: torch.Tensor, rewards: torch.Tensor):
         episode_len = self.episode_len[win_index].long()
-        self.rewards[win_index, episode_len-1] = -1
+        self.rewards[win_index, episode_len-1] = rewards
 
     def make_target(self, start_index: torch.Tensor) -> List[TrainElement]:
         target_values = torch.zeros(len(start_index), self.hparams.num_unroll_steps+1, dtype=self.hparams.dtype, device=start_index.device)
@@ -158,15 +158,13 @@ class GameStats:
             self.logger.critical(msg)
             raise ValueError(msg)
 
+        discount_mult = torch.logspace(0, 1, self.hparams.td_steps, base=self.hparams.value_discount).to(start_index.device)
+        discount_mult = discount_mult.unsqueeze(0).tile([len(start_index), 1])
+        all_rewards_index = torch.arange(0, self.rewards.shape[1]).unsqueeze(0).tile([len(start_index), 1]).to(start_index.device)
 
         for unroll_step in range(0, self.hparams.num_unroll_steps+1):
             start_unroll_index = start_index + unroll_step
             bootstrap_index = start_unroll_index + self.hparams.td_steps
-
-            if bootstrap_index.device != self.episode_len.device:
-                self.logger.critical(f'bootstrap_index: {bootstrap_index.device}, self.episode_len: {self.episode_len.device}')
-                exit(-1)
-
             bootstrap_update_index = bootstrap_index < self.episode_len
 
             # self.logger.info(f'{unroll_index}: '
@@ -175,52 +173,31 @@ class GameStats:
             #              f'bootstrap_index: {bootstrap_index.cpu().numpy()}, '
             #              f'bootstrap_update_index: {bootstrap_update_index.cpu().numpy()}/{bootstrap_update_index.shape}, '
             #              )
-            values = torch.zeros(len(self.root_values), device=start_index.device).float()
+            values = torch.zeros(len(start_index), device=start_index.device).float()
             if bootstrap_update_index.sum() > 0:
                 #self.logger.info(f'bootstrap_update_index: {bootstrap_update_index}')
                 valid_batch_index = batch_index[bootstrap_update_index]
                 last_discount = self.hparams.value_discount ** self.hparams.td_steps
                 values[bootstrap_update_index] = self.root_values[valid_batch_index, bootstrap_index].float() * last_discount
 
-            discount_mult = torch.logspace(0, self.hparams.td_steps, self.rewards.shape[1], base=self.hparams.value_discount).to(start_index.device)
-            if discount_mult.device != start_index.device:
-                msg = f'1 start_index: {start_index.device}, discount_mutl: {discount_mult.device}, hparams.device: {self.hparams.device}'
-                self.logger.critical(msg)
-                raise ValueError(msg)
-
-            discount_mult = discount_mult.unsqueeze(0)
-            discount_mult = discount_mult.tile([len(values), 1])
-            if discount_mult.device != start_index.device:
-                msg = f'2 start_index: {start_index.device}, discount_mutl: {discount_mult.device}, hparams.device: {self.hparams.device}'
-                self.logger.critical(msg)
-                raise ValueError(msg)
-
-            last_index = torch.minimum(bootstrap_index, self.episode_len)
-            all_rewards_index = torch.arange(self.rewards.shape[1], device=start_index.device).long().unsqueeze(0).tile([len(start_index), 1])
-
-            if discount_mult.device != start_index.device:
-                msg = f'start_index: {start_index.device}, discount_mutl: {discount_mult.device}'
-                self.logger.critical(msg)
-                raise ValueError(msg)
-
-            discount_mult = roll_by_gather(discount_mult, 1, start_index.unsqueeze(1))
-            discount_mult = torch.where(all_rewards_index < start_unroll_index.unsqueeze(1), 0, discount_mult)
-            discount_mult = torch.where(all_rewards_index >= last_index.unsqueeze(1), 0, discount_mult)
-
-            discounted_rewards = self.rewards.float() * discount_mult
-            discounted_rewards = discounted_rewards.sum(1)
-            values += discounted_rewards
-
             start_unroll_valid_bool_index = start_unroll_index < self.episode_len
             start_unroll_valid_index = start_unroll_index[start_unroll_valid_bool_index]
 
-            target_values[:, unroll_step] = values
-            target_children_visits[start_unroll_valid_bool_index, :, unroll_step] = self.children_visits[start_unroll_valid_bool_index, :, start_unroll_valid_index].float()
-            player_ids[start_unroll_valid_bool_index, unroll_step] = self.player_ids[start_unroll_valid_bool_index, start_unroll_valid_index].long()
+            rewards = self.rewards
+            rewards = torch.where(all_rewards_index < start_unroll_index.unsqueeze(1), 0, rewards)
+            rewards = torch.where(all_rewards_index >= bootstrap_index.unsqueeze(1), 0, rewards)
 
-            if unroll_step > 0:
-                target_rewards[start_unroll_valid_bool_index, unroll_step] = self.rewards[start_unroll_valid_bool_index, start_unroll_valid_index].float()
-                taken_actions[start_unroll_valid_bool_index, unroll_step] = self.actions[start_unroll_valid_bool_index, start_unroll_valid_index].long()
+            discount = roll_by_gather(discount_mult, 1, start_unroll_index.unsqueeze(1))
+            discounted_rewards = rewards * discount
+            discounted_rewards = discounted_rewards.sum(1)
+            values += discounted_rewards
+
+            target_values[:, unroll_step] = values
+            target_children_visits[:, :, unroll_step] = self.children_visits[:, :, unroll_step].float()
+            player_ids[:, unroll_step] = self.player_ids[:, unroll_step].long()
+
+            target_rewards[:, unroll_step] = self.rewards[:, unroll_step].float()
+            taken_actions[:, unroll_step] = self.actions[:, unroll_step].long()
 
             sample_len[start_unroll_valid_bool_index] += 1
 
@@ -258,7 +235,6 @@ class Train:
 
         self.action_selection_fn = action_selection_fn
 
-        self.num_train_steps = 0
         self.game_stats = {player_id:GameStats(game_ctl.hparams, self.logger) for player_id in self.hparams.player_ids}
 
     def run_simulations(self, initial_player_id: torch.Tensor, initial_game_states: torch.Tensor):
@@ -301,17 +277,13 @@ class Train:
         actions = self.action_selection_fn(children_visit_counts, episode_len)
 
         # max_debug = 10
-        # self.logger.info(f'train_steps: {self.num_train_steps}, '
-        #                  f'children_index:\n{children_index[:max_debug]}\n'
+        # self.logger.info(f'children_index:\n{children_index[:max_debug]}\n'
         #                  f'children_visit_counts:\n{children_visit_counts[:max_debug]}\n'
         #                  f'children_sum_visits:\n{children_sum_visits[:max_debug]}\n'
         #                  f'children_visits:\n{children_visits[:max_debug]}\n'
         #                  f'root_values: {root_values.shape}\n{root_values[:max_debug]}\n'
         #                  f'actions:\n{actions[:max_debug]}')
         return actions, children_visit_counts, root_values
-
-    def update_train_steps(self):
-        self.num_train_steps += 1
 
 def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int, GameStats]:
     game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.float32, device=hparams.device)
@@ -326,13 +298,6 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int,
         new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
         game_states[active_games_index] = new_game_states.detach().clone()
 
-        if not torch.all(active_player_ids == active_player_ids[0]):
-            num_equal = (active_player_ids == active_player_ids[0]).sum().item()
-            num_not_equal = (active_player_ids != active_player_ids[0]).sum().item()
-            raise ValueError(f'bug: not all active_player_ids: {len(active_player_ids)} equal to active_player_ids[0]: {active_player_ids[0]}, '
-                             f'equal: {num_equal}, '
-                             f'not_equal: {num_not_equal}')
-
         player_id = active_player_ids[0].item()
         train.game_stats[player_id].append(active_games_index, {
             'children_visits': children_visits,
@@ -346,9 +311,8 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int,
 
         win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
         other_player_id = mcts.player_id_change(hparams, torch.tensor(player_id)).item()
-        train.game_stats[other_player_id].update_rewards(win_index)
-
-        train.update_train_steps()
+        other_rewards = torch.ones_like(win_index).float() * -1
+        train.game_stats[other_player_id].update_last_reward_and_values(win_index, other_rewards)
 
         # max_debug = 10
         # train.logger.info(f'game:\n{game_states[0].detach().cpu().numpy().astype(int)}\n'
