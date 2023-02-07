@@ -14,7 +14,6 @@ import module_loader
 from network_params import NetworkParams
 
 class ResidualBlock(nn.Module):
-
     def __init__(self, num_features, kernel_size, activation):
         super().__init__()
 
@@ -49,8 +48,7 @@ class LinearPrediction(nn.Module):
                  hidden_dims,
                  output_size,
                  activation,
-                 output_activation=None,
-                 enable_layer_norm=False) -> None:
+                 output_activation=None) -> None:
         super().__init__()
 
         blocks = [nn.Flatten()]
@@ -58,8 +56,6 @@ class LinearPrediction(nn.Module):
         for hidden_size in hidden_dims:
             blocks.append(nn.Linear(prev_hidden_size, hidden_size))
             blocks.append(activation())
-            if enable_layer_norm:
-                blocks.append(nn.LayerNorm([hidden_size]))
             prev_hidden_size = hidden_size
 
         blocks.append(nn.Linear(prev_hidden_size, output_size))
@@ -100,7 +96,6 @@ class Representation(nn.Module):
             nn.Linear(hparams.repr_conv_res_num_features*np.prod(hparams.observation_shape),
                       hparams.repr_linear_num_features),
             nn.BatchNorm1d(hparams.repr_linear_num_features),
-            #nn.LayerNorm([hparams.repr_linear_num_features]),
         )
 
     def forward(self, inputs):
@@ -117,7 +112,6 @@ class Prediction(nn.Module):
             nn.Flatten(),
         )
 
-        #num_input_features = hparams.repr_conv_res_num_features*np.prod(hparams.observation_shape)
         num_input_features = hparams.repr_linear_num_features
 
         self.output_policy_logits = LinearPrediction(num_input_features,
@@ -148,8 +142,7 @@ class Dynamic(nn.Module):
                              hparams.dyn_state_layers,
                              hparams.repr_linear_num_features,
                              hparams.activation,
-                             output_activation=hparams.activation,
-                             enable_layer_norm=True),
+                             output_activation=hparams.activation),
             nn.LayerNorm([hparams.repr_linear_num_features]),
         )
 
