@@ -278,13 +278,13 @@ class Tree:
             # self.logger.info(f'backpropagate: node_multiplier: {node_multiplier}, value_sum:\n{self.value_sum[batch_index]}')
             self.visit_count[batch_index, node_index] += 1
 
-            value[batch_index] = self.reward[batch_index, node_index] + self.hparams.value_discount * current_value
+            value[batch_index] = (self.reward[batch_index, node_index] + self.hparams.value_discount * current_value) * node_multiplier[batch_index]
             #value[batch_index] = self.reward[batch_index, node_index] * node_multiplier + self.hparams.value_discount * value[batch_index]
             self.min_max_stats.update(value)
 
             node_multiplier[batch_index] *= -1
 
-        self.value_sum[:, 0] += value
+        self.value_sum[:, 0] += value * node_multiplier
         self.visit_count[:, 0] += 1
 
 
