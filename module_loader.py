@@ -1,4 +1,4 @@
-import importlib
+from typing import Any
 
 import hparams
 import network_params
@@ -13,6 +13,8 @@ class GameModule:
             self.hparams = hparams.ConnectXHparams()
         else:
             raise NotImplementedError(f'gmae "{self.game_name}" is not implemented')
+
+        self.game_hparams: Any = None
 
         if load:
             self.load()
