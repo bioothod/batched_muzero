@@ -44,13 +44,13 @@ class ResidualBlock(nn.Module):
         return x
 
 class LinearPrediction(nn.Module):
-
     def __init__(self,
                  input_size,
                  hidden_dims,
                  output_size,
                  activation,
-                 output_activation=None) -> None:
+                 output_activation=None,
+                 enable_layer_norm=False) -> None:
         super().__init__()
 
         blocks = [nn.Flatten()]
@@ -58,6 +58,8 @@ class LinearPrediction(nn.Module):
         for hidden_size in hidden_dims:
             blocks.append(nn.Linear(prev_hidden_size, hidden_size))
             blocks.append(activation())
+            if enable_layer_norm:
+                blocks.append(nn.LayerNorm([hidden_size]))
             prev_hidden_size = hidden_size
 
         blocks.append(nn.Linear(prev_hidden_size, output_size))
@@ -97,7 +99,8 @@ class Representation(nn.Module):
             nn.Dropout(hparams.repr_features_dropout),
             nn.Linear(hparams.repr_conv_res_num_features*np.prod(hparams.observation_shape),
                       hparams.repr_linear_num_features),
-            nn.LayerNorm([hparams.repr_linear_num_features]),
+            nn.BatchNorm1d(hparams.repr_linear_num_features),
+            #nn.LayerNorm([hparams.repr_linear_num_features]),
         )
 
     def forward(self, inputs):
@@ -120,7 +123,8 @@ class Prediction(nn.Module):
         self.output_policy_logits = LinearPrediction(num_input_features,
                                                      hparams.pred_hidden_linear_layers,
                                                      hparams.num_actions,
-                                                     hparams.activation)
+                                                     hparams.activation,
+                                                     output_activation=None)
         self.output_value = LinearPrediction(num_input_features,
                                              hparams.pred_hidden_linear_layers,
                                              1,
@@ -140,7 +144,12 @@ class Dynamic(nn.Module):
         num_input_features = hparams.repr_linear_num_features + state_extension
         self.output_state = nn.Sequential(
             nn.Dropout(hparams.dyn_state_dropout),
-            LinearPrediction(num_input_features, hparams.dyn_state_layers, hparams.repr_linear_num_features, hparams.activation, hparams.activation),
+            LinearPrediction(num_input_features,
+                             hparams.dyn_state_layers,
+                             hparams.repr_linear_num_features,
+                             hparams.activation,
+                             output_activation=hparams.activation,
+                             enable_layer_norm=True),
             nn.LayerNorm([hparams.repr_linear_num_features]),
         )
 
