@@ -117,7 +117,6 @@ class Trainer:
         value_loss = self.scalar_loss(out.value, sample.values[:, 0])
 
         iteration_loss = policy_loss + value_loss
-        iteration_loss = scale_gradient(iteration_loss, 1/sample.sample_len)
         total_loss_mean = torch.mean(iteration_loss)
 
         policy_loss_mean = policy_loss.mean()
@@ -130,6 +129,20 @@ class Trainer:
                 'total': total_loss_mean,
         }, self.global_step)
 
+        for player_id in self.hparams.player_ids:
+            player_idx = sample.player_ids[:, 0] == player_id
+
+            if player_idx.sum() > 0:
+                pred_values = out.value[player_idx].detach().cpu().numpy()
+                true_values = sample.values[player_idx, 0].detach().cpu().numpy()
+                value_loss_local = value_loss[player_idx]
+
+                self.summary_writer.add_scalars(f'train/initial_values{player_id}', {
+                    f'pred': pred_values.mean(),
+                    f'true': true_values.mean(),
+                    f'loss': value_loss_local.mean(),
+                }, self.global_step)
+
         batch_index = torch.arange(len(sample))
         for step_idx in range(1, sample_len_max):
             len_idx = step_idx < sample.sample_len[batch_index]
@@ -141,10 +154,11 @@ class Trainer:
             rewards = sample.rewards[batch_index]
 
             hidden_states = out.hidden_state[len_idx]
-            scale = torch.ones_like(hidden_states, device=out.hidden_state.device) * 0.5
-            hidden_states = scale_gradient(hidden_states, scale)
 
             out = self.inference.recurrent(hidden_states, actions[:, step_idx-1])
+
+            # scale = torch.ones_like(hidden_states, device=out.hidden_state.device) * 0.5
+            # hidden_states = scale_gradient(hidden_states, scale)
 
             policy_loss = self.policy_loss(out.policy_logits, children_visits[:, :, step_idx])
             value_loss = self.scalar_loss(out.value, values[:, step_idx])
@@ -263,7 +277,9 @@ class Trainer:
             if not fn.endswith('.ckpt'):
                 continue
 
-            score = float(fn.split('.')[0][7:])
+            filename = os.path.splitext(fn)[0]
+            score_str = filename.split('_')[1]
+            score = float(score_str)
             if max_score is None or score > max_score:
                 max_score = score
                 max_score_fn = fn
@@ -285,7 +301,6 @@ def main():
 
     module = module_loader.GameModule(FLAGS.game, load=True)
 
-    epoch = 0
     module.hparams.num_simulations = FLAGS.num_eval_simulations
     module.hparams.num_training_steps = FLAGS.num_training_steps
     module.hparams.checkpoints_dir = FLAGS.checkpoints_dir
