@@ -38,14 +38,14 @@ class GenericHparams:
     num_steps_to_argmax_action_selection: int
     action_selection_temperature: float = 1
 
-    max_training_games: int = 5
+    max_training_games: int = 20
 
     server_port: int = 50051
     num_server_workers: int = 2
 
     num_training_steps: int = 64
     min_lr = 1e-5
-    init_lr = 5e-4
+    init_lr = 1e-4
 
 class ConnectXHparams(GenericHparams):
     checkpoints_dir: str = 'connectx_checkpoints_1'
