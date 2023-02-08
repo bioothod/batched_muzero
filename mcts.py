@@ -221,10 +221,9 @@ class Tree:
         parent_visit_count = self.visit_count[batch_index, parent_index]
         children_visit_count = self.visit_count[batch_index].gather(1, children_index)
         score = torch.log((parent_visit_count + self.hparams.pb_c_base + 1) / self.hparams.pb_c_base) + self.hparams.pb_c_init
-        score *= torch.sqrt(parent_visit_count)
+        score = score * torch.sqrt(parent_visit_count)
 
-        score = score.unsqueeze(1) * torch.ones_like(children_visit_count)
-        score /= (children_visit_count + 1)
+        score = score.unsqueeze(1) / (children_visit_count + 1)
 
         children_prior = self.prior[batch_index].gather(1, children_index)
         prior_score = score * children_prior
