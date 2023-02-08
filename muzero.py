@@ -58,7 +58,8 @@ class Trainer:
         self.logger = logger
         self.eval_ds = eval_ds
 
-        self.max_best_score = None
+        self.max_best_score = 0.
+        self.max_good_score = 0.
 
         self.replay_buffer = ReplayBuffer(self.hparams)
 
@@ -224,22 +225,34 @@ class Trainer:
             active_player_ids = self.eval_ds.game_player_ids
             pred_actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
 
-        best_score, good_score = self.eval_ds.evaluate(pred_actions, debug=False)
+        best_score, good_score, total_best_score, total_good_score = self.eval_ds.evaluate(pred_actions)
 
         eval_time = perf_counter() - start_time
-        self.summary_writer.add_scalars('eval/ref_moves_score', {
-            'good': good_score,
-            'best': best_score,
-        }, self.global_step)
+        for player_id in self.hparams.player_ids:
+            self.summary_writer.add_scalars(f'eval/ref_moves_score{player_id}', {
+                'good': good_score[player_id],
+                'best': best_score[player_id],
+            }, self.global_step)
+
         self.summary_writer.add_scalar('eval/time', eval_time, self.global_step)
+        self.summary_writer.add_scalars(f'eval/ref_moves_score_total', {
+            'max_good': self.max_good_score,
+            'good': total_good_score,
+            'max_best': self.max_best_score,
+            'best': total_best_score,
+        }, self.global_step)
 
-        if save_if_best and (self.max_best_score is None or best_score > self.max_best_score):
-            self.max_best_score = best_score
-            checkpoint_path = os.path.join(self.hparams.checkpoints_dir, f'muzero_{best_score:.1f}.ckpt')
+        if save_if_best and (total_best_score >= self.max_best_score):
+            self.max_best_score = total_best_score
+            checkpoint_path = os.path.join(self.hparams.checkpoints_dir, f'muzero_best_{total_best_score:.1f}.ckpt')
             self.save(checkpoint_path)
-            self.logger.info(f'stored checkpoint: generation: {self.global_step}, best_score: {best_score:.1f}, checkpoint: {checkpoint_path}')
+            self.logger.info(f'stored checkpoint: generation: {self.global_step}, best_score: {total_best_score:.1f}, checkpoint: {checkpoint_path}')
 
-        return best_score, good_score
+        if save_if_best and (total_good_score >= self.max_good_score):
+            self.max_good_score = total_good_score
+            checkpoint_path = os.path.join(self.hparams.checkpoints_dir, f'muzero_good_{total_good_score:.1f}.ckpt')
+            self.save(checkpoint_path)
+            self.logger.info(f'stored checkpoint: generation: {self.global_step}, good_score: {total_good_score:.1f}, checkpoint: {checkpoint_path}')
 
     def save(self, checkpoint_path):
         torch.save({
@@ -251,6 +264,7 @@ class Trainer:
             'dynamic_optimizer_state_dict': self.dynamic_opt.state_dict(),
             'global_step': self.global_step,
             'max_best_score': self.max_best_score,
+            'max_good_score': self.max_good_score,
         }, checkpoint_path)
 
     def load(self, checkpoint_path):
@@ -263,8 +277,9 @@ class Trainer:
         self.inference.dynamic.load_state_dict(checkpoint['dynamic_state_dict'])
         self.dynamic_opt.load_state_dict(checkpoint['dynamic_optimizer_state_dict'])
 
-        self.global_step = checkpoint['global_step']
-        self.max_best_score = checkpoint['max_best_score']
+        self.global_step = int(checkpoint['global_step'])
+        self.max_best_score = float(checkpoint['max_best_score'])
+        self.max_good_score = float(checkpoint['max_good_score'])
 
         self.save_muzero_server_weights()
 
@@ -276,9 +291,11 @@ class Trainer:
         for fn in os.listdir(self.hparams.checkpoints_dir):
             if not fn.endswith('.ckpt'):
                 continue
+            if not fn.startswith('muzero_best_'):
+                continue
 
             filename = os.path.splitext(fn)[0]
-            score_str = filename.split('_')[1]
+            score_str = filename.split('_')[-1]
             score = float(score_str)
             if max_score is None or score > max_score:
                 max_score = score
@@ -290,6 +307,8 @@ class Trainer:
 
 
 def main():
+    #torch.autograd.set_detect_anomaly(True)
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_eval_simulations', type=int, default=400, help='Number of evaluation simulations')
     parser.add_argument('--num_training_steps', type=int, default=40, help='Number of training steps before evaluation')

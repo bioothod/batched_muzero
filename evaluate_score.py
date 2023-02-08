@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import List, Optional
 
 import argparse
@@ -74,23 +75,34 @@ class EvaluationDataset:
         player_state_rates = ', '.join(player_state_rates)
         self.logger.info(f'states: {len(self.game_states)}, player_state_rates: {player_state_rates}')
 
-    def evaluate(self, pred_actions: torch.Tensor, debug: bool):
-        best_count = 0
-        good_count = 0
-        for pred_action, best_moves, good_moves in zip(pred_actions, self.ref_best_moves, self.ref_good_moves):
+    def evaluate(self, pred_actions: torch.Tensor):
+        best_count = defaultdict(int)
+        good_count = defaultdict(int)
+        player_count = defaultdict(int)
+        for pred_action, best_moves, good_moves, player_id in zip(pred_actions, self.ref_best_moves, self.ref_good_moves, self.game_player_ids):
+            player_id = player_id.item()
             if pred_action in best_moves:
-                best_count += 1
+                best_count[player_id] += 1
             if pred_action in good_moves:
-                good_count += 1
+                good_count[player_id] += 1
+            player_count[player_id] += 1
 
-        best_score = best_count / len(pred_actions) * 100
-        good_score = good_count / len(pred_actions) * 100
+        total_best_score = 0.
+        total_good_score = 0.
 
-        if debug:
-            self.logger.info(f'perfect moves: {best_score:.1f}')
-            self.logger.info(f'   good moves: {good_score:.1f}')
+        best_score = defaultdict(float)
+        good_score = defaultdict(float)
+        for player_id in self.player_ids:
+            best_score[player_id] = best_count[player_id] / player_count[player_id] * 100
+            good_score[player_id] = good_count[player_id] / player_count[player_id] * 100
 
-        return best_score, good_score
+            total_best_score += best_count[player_id]
+            total_good_score += good_count[player_id]
+
+        total_best_score = total_best_score / len(pred_actions) * 100
+        total_good_score = total_good_score / len(pred_actions) * 100
+
+        return best_score, good_score, total_best_score, total_good_score
 
 def main():
     parser = argparse.ArgumentParser()
