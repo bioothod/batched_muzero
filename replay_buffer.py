@@ -13,7 +13,7 @@ class ReplayBuffer:
     def __init__(self, hparams: GenericHparams):
         self.hparams = hparams
         self.games = defaultdict(list)
-
+        self.max_num_games = 1
 
     def add_game(self, generation: int, game: GameStats):
         self.games[generation].append(game)
@@ -23,8 +23,8 @@ class ReplayBuffer:
         flatten_games = self.flatten_games()
         num_games = len(flatten_games)
 
-        if num_games > self.hparams.max_training_games:
-            to_remove = num_games - self.hparams.max_training_games
+        if num_games > self.max_num_games:
+            to_remove = num_games - self.max_num_games
 
             all_keys = sorted(list(self.games.keys()))
             for gen in all_keys:
@@ -38,6 +38,9 @@ class ReplayBuffer:
                     num_games -= to_remove
                     to_remove = 0
                     break
+
+            if self.max_num_games < self.hparams.max_training_games:
+                self.max_num_games += 1
 
     def num_games(self) -> int:
         return len(self.flatten_games())
