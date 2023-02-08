@@ -137,19 +137,19 @@ class MuzeroCollectionClient:
 
                     prefix = f'collect/{self.client_id}/{player_id}'
 
-                    for i in range(3):
+                    for i in range(4):
                         valid_index = game_stat.episode_len > i
                         children_visits = game_stat.children_visits[valid_index, :, i].float()
                         children_visits = children_visits / children_visits.sum(1, keepdim=True)
-                        actions = game_stat.actions[valid_index, i]
+                        #actions = game_stat.actions[valid_index, i]
 
                         if len(children_visits) > 0:
                             children_visits = {str(action):children_visits[:, action].mean(0) for action in range(children_visits.shape[-1])}
                             self.summary_writer.add_scalars(f'{prefix}/children_visits{i}', children_visits, self.generation)
-                            self.summary_writer.add_histogram(f'{prefix}/actions{i}', actions, self.generation)
+                            #self.summary_writer.add_histogram(f'{prefix}/actions{i}', actions, self.generation)
 
                     self.summary_writer.add_scalar(f'{prefix}/root_values', game_stat.root_values[:, 0].float().mean(), self.generation)
-                    self.summary_writer.add_histogram(f'{prefix}/train_steps', game_stat.episode_len, self.generation)
+                    #self.summary_writer.add_histogram(f'{prefix}/train_steps', game_stat.episode_len, self.generation)
 
                     self.summary_writer.add_scalars(f'{prefix}/train_steps', {
                         'min': game_stat.episode_len.min(),
