@@ -7,19 +7,18 @@ class NetworkParams:
     observation_shape: List[int] = []
 
     kernel_size: int
-    hidden_size: int
+    num_stacked_states: int
+    num_additional_planes: int
+    conv_res_num_features: int
 
     repr_features_dropout: float
-    repr_conv_res_num_features: int
     repr_conv_num_blocks: int
-    repr_linear_num_features: int
 
     pred_hidden_linear_layers: List[int]
     num_actions: int = 0
 
-    dyn_state_dropout: float
     dyn_reward_dropout: float
-    dyn_state_layers: List[int]
+    dyn_conv_num_blocks: int
     dyn_reward_linear_layers: List[int]
 
     activation_str: str = 'LeakyReLU'
@@ -51,19 +50,19 @@ class NetworkParams:
                 self.__setattr__(k, v)
 
 class ConnectXParams(NetworkParams):
+    num_stacked_states: int = 1
+    num_additional_planes: int = 1
     kernel_size: int = 4
+    conv_res_num_features: int = 64
 
     repr_features_dropout: float = 0.
-    repr_conv_res_num_features: int = 64
-    repr_conv_num_blocks: int = 6
-    repr_linear_num_features: int = 512
+    repr_conv_num_blocks: int = 8
 
-    pred_hidden_linear_layers: List[int] = [128, 128]
+    pred_hidden_linear_layers: List[int] = [512, 128]
     num_actions: int = 0
 
-    dyn_state_dropout: float = 0.
     dyn_reward_dropout: float = 0.
-    dyn_state_layers: List[int] = [512, 512, 512]
+    dyn_conv_num_blocks: int = 8
     dyn_reward_linear_layers: List[int] = [128]
 
     activation_str: str = 'LeakyReLU'
