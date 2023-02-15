@@ -9,16 +9,17 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from hparams import GenericHparams as Hparams
-from inference import GenericInference
+from networks import GameState, Inference
 import module_loader
 import mcts
 
 @dataclass
 class TrainElement:
+    start_index: torch.Tensor
     values: torch.Tensor
     rewards: torch.Tensor
     children_visits: torch.Tensor
-    game_states: torch.Tensor
+    initial_game_state: torch.Tensor
     actions: torch.Tensor
     sample_len: torch.Tensor
     player_ids: torch.Tensor
@@ -27,31 +28,22 @@ class TrainElement:
         return len(self.values)
 
     def __hash__(self) -> int:
-        state_data = self.game_states.detach().cpu().numpy().tostring()
+        state_data = self.initial_game_state.detach().cpu().numpy().tostring()
         action_data = self.actions.detach().cpu().numpy().tostring()
-        return hash((state_data, action_data))
+        start_index_data = self.start_index.detach().cpu().numpy().tostring()
+        sample_len_data = self.sample_len.detach().cpu().numpy().tostring()
+        player_ids_data = self.player_ids.detach().cpu().numpy().tostring()
+        return hash((state_data, action_data, start_index_data, sample_len_data, player_ids_data))
 
     def __eq__(self, other: 'TrainElement') -> bool:
-        return torch.all(self.game_states == other.game_states) and torch.all(self.values == other.values) and torch.all(self.actions == other.actions)
-
-    @staticmethod
-    def from_dict(sample_dict: Dict[str, torch.Tensor]) -> 'TrainElement':
-        return TrainElement(
-            game_states = sample_dict['game_states'],
-            actions = sample_dict['actions'],
-            sample_len = sample_dict['sample_len'],
-            values = sample_dict['values'],
-            rewards = sample_dict['rewards'],
-            children_visits = sample_dict['children_visits'],
-            player_ids = sample_dict['player_ids'],
-        )
-
+        return torch.all(self.initial_game_state == other.initial_game_state) and torch.all(self.values == other.values) and torch.all(self.actions == other.actions)
 
     def to(self, device):
+        self.start_index = self.start_index.to(device)
         self.values = self.values.to(device)
         self.rewards = self.rewards.to(device)
         self.children_visits = self.children_visits.to(device)
-        self.game_states = self.game_states.to(device)
+        self.initial_game_state = self.initial_game_state.to(device)
         self.actions = self.actions.to(device)
         self.sample_len = self.sample_len.to(device)
         self.player_ids = self.player_ids.to(device)
@@ -91,7 +83,7 @@ class GameStats:
         self.actions = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
         self.player_ids = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
         self.dones = torch.zeros(hparams.batch_size, dtype=torch.bool, device=hparams.device)
-        self.game_states = torch.zeros([hparams.batch_size, hparams.max_episode_len] + hparams.state_shape, dtype=torch.float32, device=hparams.device)
+        self.game_states = []
 
         self.stored_tensors = {
             'rewards': self.rewards,
@@ -111,7 +103,7 @@ class GameStats:
         self.actions = self.actions.to(device)
         self.player_ids = self.player_ids.to(device)
         self.dones = self.dones.to(device)
-        self.game_states = self.game_states.to(device)
+        self.game_states = [state.to(device) for state in self.game_states]
         return self
 
     def __len__(self):
@@ -127,13 +119,15 @@ class GameStats:
                 self.logger.critical(msg)
                 raise ValueError(msg)
 
-            tensor = self.stored_tensors[key]
+            dst = self.stored_tensors[key]
             if key == 'children_visits':
-                tensor[index, :, episode_len] = value.detach().clone()
+                dst[index, :, episode_len] = value.detach().clone()
             elif key == 'dones':
-                tensor[index] = value.detach().clone()
+                dst[index] = value.detach().clone()
+            elif key == 'game_states':
+                dst.append(value.detach().clone())
             else:
-                tensor[index, episode_len] = value.detach().clone()
+                dst[index, episode_len] = value.detach().clone()
 
         self.episode_len[index] += 1
 
@@ -151,7 +145,9 @@ class GameStats:
         sample_len = torch.zeros(len(start_index), dtype=torch.int64, device=start_index.device)
 
         batch_index = torch.arange(len(start_index), dtype=torch.int64, device=start_index.device)
-        game_states = self.game_states[batch_index, start_index].float()
+        initial_game_state = []
+        for bidx, sidx in zip(batch_index, start_index):
+            initial_game_state.append(self.game_states[sidx][bidx, :, :, :])
 
         if start_index.device != self.episode_len.device:
             msg = f'start_index: {start_index.device}, self.episode_len: {self.episode_len.device}'
@@ -183,8 +179,7 @@ class GameStats:
             start_unroll_valid_bool_index = start_unroll_index < self.episode_len
             start_unroll_valid_index = start_unroll_index[start_unroll_valid_bool_index]
 
-            rewards = self.rewards
-            rewards = torch.where(all_rewards_index < start_unroll_index.unsqueeze(1), 0, rewards)
+            rewards = torch.where(all_rewards_index < start_unroll_index.unsqueeze(1), 0, self.rewards)
             rewards = torch.where(all_rewards_index >= bootstrap_index.unsqueeze(1), 0, rewards)
 
             discount = roll_by_gather(discount_mult, 1, start_unroll_index.unsqueeze(1))
@@ -192,7 +187,8 @@ class GameStats:
             discounted_rewards = discounted_rewards.sum(1)
             values += discounted_rewards
 
-            target_values[:, unroll_step] = values
+            target_values[:, unroll_step] = (values + self.root_values[:, unroll_step]) / 2
+            #target_values[:, unroll_step] = values
             target_children_visits[:, :, unroll_step] = self.children_visits[:, :, unroll_step].float()
             player_ids[:, unroll_step] = self.player_ids[:, unroll_step].long()
 
@@ -204,10 +200,11 @@ class GameStats:
         samples = []
         for i in range(len(target_values)):
             elm = TrainElement(
+                start_index=start_index[i],
                 values=target_values[i],
                 rewards=target_rewards[i],
                 children_visits=target_children_visits[i],
-                game_states=game_states[i],
+                initial_game_state=initial_game_state[i],
                 actions=taken_actions[i],
                 sample_len=sample_len[i],
                 player_ids=player_ids[i],
@@ -220,7 +217,7 @@ class GameStats:
 class Train:
     def __init__(self,
                  game_ctl: module_loader.GameModule,
-                 inference: GenericInference,
+                 inference: Inference,
                  logger: logging.Logger,
                  summary_writer: SummaryWriter,
                  summary_prefix: str,
@@ -237,45 +234,41 @@ class Train:
 
         self.game_stats = {player_id:GameStats(game_ctl.hparams, self.logger) for player_id in self.hparams.player_ids}
 
-    def run_simulations(self, initial_player_id: torch.Tensor, initial_game_states: torch.Tensor):
+    def run_simulations(self, initial_player_id: torch.Tensor, initial_game_state: torch.Tensor, invalid_actions_mask: torch.Tensor):
         start_simulation_time = perf_counter()
 
         tree = mcts.Tree(self.hparams, initial_player_id, self.inference, self.logger)
 
-        batch_size = len(initial_game_states)
-        batch_index = torch.arange(batch_size).long()
-        node_index = torch.zeros(batch_size).long().to(self.hparams.device)
+        batch_size = len(initial_player_id)
+        batch_index = torch.arange(batch_size).long().to(self.hparams.device)
+        node_index = torch.zeros(batch_size, 1).long().to(self.hparams.device)
 
-        out = self.inference.initial(initial_player_id, initial_game_states)
+        out = self.inference.initial(initial_game_state)
 
-        episode_len = torch.ones(len(node_index), dtype=torch.int64).to(self.hparams.device)
-        search_path = torch.zeros(len(node_index), 1).long().to(self.hparams.device)
+        episode_len = torch.ones(batch_size, dtype=torch.int64).to(self.hparams.device)
+        search_path = torch.zeros(batch_size, 1, dtype=torch.int64).to(self.hparams.device)
 
         tree.store_states(search_path, episode_len, out.hidden_state)
 
-        tree.expand(initial_player_id, batch_index, node_index, out.policy_logits)
-        tree.visit_count[batch_index, node_index] = 1
-        tree.value_sum[batch_index, node_index] += out.value
+        tree.expand(node_index, out.policy_logits)
+        tree.visit_count.scatter_(1, node_index, 1)
+        tree.value_sum.scatter_(1, node_index, out.value)
 
         if self.hparams.add_exploration_noise:
             children_index = tree.children_index(batch_index, node_index)
-            tree.add_exploration_noise(batch_index, children_index, self.hparams.exploration_fraction)
-
-        invalid_actions_mask = self.game_ctl.invalid_actions_mask(self.game_ctl.game_hparams, initial_game_states)
+            tree.add_exploration_noise(children_index, self.hparams.exploration_fraction)
 
         for _ in range(self.hparams.num_simulations):
-            search_path, episode_len = tree.run_one_simulation(initial_player_id, invalid_actions_mask)
+            search_path, episode_len = tree.run_one_simulation(initial_player_id.detach().clone(), invalid_actions_mask.detach().clone())
 
         simulation_time = perf_counter() - start_simulation_time
         one_sim_ms = int(simulation_time / self.hparams.num_simulations * 1000)
 
-        node_index = torch.zeros(batch_size).long().to(self.hparams.device)
         children_index = tree.children_index(batch_index, node_index)
-        children_visit_counts = tree.visit_count[batch_index].gather(1, children_index).float()
-        root_values = tree.value(batch_index, node_index.unsqueeze(1)).squeeze(1)
+        children_visit_counts = tree.visit_count.gather(1, children_index).float()
+        root_values = tree.value(batch_index, node_index).squeeze(1)
 
         actions = self.action_selection_fn(children_visit_counts, episode_len)
-
         # max_debug = 10
         # self.logger.info(f'children_index:\n{children_index[:max_debug]}\n'
         #                  f'children_visit_counts:\n{children_visit_counts[:max_debug]}\n'
@@ -290,19 +283,30 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int,
     player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.int64) * hparams.player_ids[0]
 
     active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
+    game_state_stacks = {player_id:GameState(hparams.batch_size, hparams, train.game_ctl.network_hparams) for player_id in hparams.player_ids}
 
     while True:
-        active_game_states = game_states[active_games_index].detach().clone()
         active_player_ids = player_ids[active_games_index].detach().clone()
-        actions, children_visits, root_values = train.run_simulations(active_player_ids, active_game_states)
+
+        # we do not care if it will be modified in place, we will make a copy when pushing this state into the stack of states
+        active_game_states = game_states[active_games_index]
+        invalid_actions_mask = train.game_ctl.invalid_actions_mask(train.game_ctl.game_hparams, active_game_states)
+
+        player_id = active_player_ids[0].item()
+        if torch.any(player_id != player_ids):
+            raise ValueError(f'pushing non-consistent player_ids: player_id: {player_id}, not_equal: {(player_id != player_ids).sum()}/{len(player_ids)}')
+
+        game_state_stacks[player_id].push_game(player_ids, game_states)
+        game_state_stack_converted = game_state_stacks[player_id].create_state()
+
+        actions, children_visits, root_values = train.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask)
         new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
         game_states[active_games_index] = new_game_states.detach().clone()
 
-        player_id = active_player_ids[0].item()
         train.game_stats[player_id].append(active_games_index, {
             'children_visits': children_visits,
             'root_values': root_values,
-            'game_states': active_game_states,
+            'game_states': game_state_stack_converted, # needs to save whole tensor of batch_size size
             'rewards': rewards,
             'actions': actions,
             'dones': dones,
