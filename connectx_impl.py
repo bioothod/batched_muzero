@@ -68,6 +68,16 @@ def check_reward(hparams: GameHparams, games: torch.Tensor, player_id: torch.Ten
     return rewards, dones
 
 @torch.jit.script
+def encode_actions(hparams: GameHparams, actions: torch.Tensor) -> torch.Tensor:
+    device = actions.device
+    num_games = len(actions)
+
+    actions_enc = torch.zeros(num_games, 1, hparams.rows, hparams.columns, dtype=torch.float32, device=device)
+
+    actions_enc[:, 0, 0, actions] = 1
+    return actions_enc
+
+@torch.jit.script
 def step_games(hparams: GameHparams, games: torch.Tensor, player_id: torch.Tensor, actions: torch.Tensor):
     actions = actions.long().to(games.device)
     player_id = player_id.float()
