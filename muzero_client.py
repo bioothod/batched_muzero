@@ -21,7 +21,7 @@ import muzero_pb2_grpc
 from hparams import GenericHparams as Hparams
 from logger import setup_logger
 import module_loader
-from networks import Inference
+from networks import GameState, Inference
 import simulation
 
 def fix(map_loc):
@@ -67,7 +67,7 @@ class MuzeroCollectionClient:
         self.write_summary = write_summary
         if write_summary:
             tensorboard_log_dir = os.path.join(self.game_ctl.hparams.checkpoints_dir, 'tensorboard_logs')
-            self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir)
+            self.summary_writer = SummaryWriter(log_dir=tensorboard_log_dir, flush_secs=1)
 
     def action_selection_fn(self, children_visit_counts: torch.Tensor, episode_len: torch.Tensor) -> torch.Tensor:
         actions_argmax = torch.argmax(children_visit_counts, 1)
@@ -135,17 +135,18 @@ class MuzeroCollectionClient:
             if self.write_summary and self.summary_writer is not None:
                 for player_id, game_stat in game_stats.items():
 
-                    prefix = f'collect/{self.client_id}/{player_id}'
+                    prefix = f'{self.client_id}_{player_id}'
 
-                    for i in range(4):
+                    for i in range(8):
                         valid_index = game_stat.episode_len > i
-                        children_visits = game_stat.children_visits[valid_index, :, i].float()
-                        children_visits = children_visits / children_visits.sum(1, keepdim=True)
-                        #actions = game_stat.actions[valid_index, i]
 
-                        if len(children_visits) > 0:
+                        if valid_index.sum() > 0:
+                            children_visits = game_stat.children_visits[valid_index, :, i].float()
+                            children_visits = children_visits / children_visits.sum(1, keepdim=True)
                             children_visits = {str(action):children_visits[:, action].mean(0) for action in range(children_visits.shape[-1])}
                             self.summary_writer.add_scalars(f'{prefix}/children_visits{i}', children_visits, self.generation)
+
+                            #actions = game_stat.actions[valid_index, i]
                             #self.summary_writer.add_histogram(f'{prefix}/actions{i}', actions, self.generation)
 
                     self.summary_writer.add_scalar(f'{prefix}/root_values', game_stat.root_values[:, 0].float().mean(), self.generation)
@@ -168,10 +169,9 @@ class MuzeroCollectionClient:
 
                     episode_rewards_mean[f'{player_id}'] = rewards.mean()
 
-                self.summary_writer.add_scalars(f'collect/{self.client_id}/results', episode_rewards, self.generation)
-                self.summary_writer.add_scalars(f'collect/{self.client_id}/mean_reward', episode_rewards_mean, self.generation)
-
-                self.summary_writer.add_scalar(f'collect/{self.client_id}/time', collection_time, self.generation)
+                self.summary_writer.add_scalars(f'{self.client_id}/results', episode_rewards, self.generation)
+                self.summary_writer.add_scalars(f'{self.client_id}/mean_reward', episode_rewards_mean, self.generation)
+                self.summary_writer.add_scalar(f'{self.client_id}/collection_time', collection_time, self.generation)
 
 def run_process(client_id: str, module: module_loader.GameModule, write_summary: bool):
     logfile = os.path.join(module.hparams.checkpoints_dir, f'{client_id}.log')
@@ -198,26 +198,25 @@ def main():
     parser.add_argument('--batch_size', type=int, default=1024, help='Simulation batch size')
     parser.add_argument('--checkpoints_dir', type=str, required=True, help='Checkpoints directory and base dir for logs and stats')
     parser.add_argument('--game', type=str, required=True, help='Name of the game')
+    parser.add_argument('--device', type=str, default='cuda:0', help='Device to run episode collection')
+    parser.add_argument('--no_tensorboard', action='store_true', help='Do not store tensorboard statistics')
     FLAGS = parser.parse_args()
 
     module = module_loader.GameModule(FLAGS.game, load=False)
     module.hparams.checkpoints_dir = FLAGS.checkpoints_dir
     module.hparams.batch_size = FLAGS.batch_size
     module.hparams.num_simulations = FLAGS.num_simulations
+    module.hparams.device = FLAGS.device
 
     os.makedirs(module.hparams.checkpoints_dir, exist_ok=True)
 
-    if torch.cuda.is_available():
-        module.hparams.device = 'cuda:0'
-    else:
-        module.hparams.device = 'cpu'
 
     mp.set_start_method('spawn')
 
     processes = []
     for cid in range(FLAGS.start_id, FLAGS.start_id+FLAGS.num_clients):
         client_id = f'client{cid}'
-        p = mp.Process(target=run_process, args=(client_id, module, cid==FLAGS.start_id))
+        p = mp.Process(target=run_process, args=(client_id, module, cid==FLAGS.start_id and not FLAGS.no_tensorboard))
         p.start()
         processes.append(p)
 
