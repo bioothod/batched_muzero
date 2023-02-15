@@ -32,5 +32,6 @@ class GameModule:
 
             self.step_games = connectx_impl.step_games
             self.invalid_actions_mask = connectx_impl.invalid_actions_mask
+            self.encode_actions = connectx_impl.encode_actions
             self.game_hparams = connectx_impl.GameHparams()
             self.network_hparams = network_params.ConnectXParams(observation_shape=self.hparams.state_shape, num_actions=self.hparams.num_actions)
