@@ -3,6 +3,7 @@ from typing import List, Dict, NamedTuple
 import random
 
 from collections import defaultdict
+from copy import deepcopy
 
 import torch
 
@@ -14,12 +15,19 @@ class ReplayBuffer:
         self.hparams = hparams
         self.games = defaultdict(list)
         self.max_num_games = 1
+        self.num_games_received = 0
 
     def add_game(self, generation: int, game: GameStats):
         self.games[generation].append(game)
+        self.num_games_received += 1
         self.truncate()
 
-    def truncate(self):
+    def truncate(self, max_generation=0):
+        keys = deepcopy(list(self.games.keys()))
+        for key in keys:
+            if key < max_generation:
+                del self.games[key]
+
         flatten_games = self.flatten_games()
         num_games = len(flatten_games)
 
@@ -53,21 +61,25 @@ class ReplayBuffer:
 
         return all_games
 
-    def sample(self, batch_size: int) -> List[TrainElement]:
-        all_games = self.flatten_games()
-        device = all_games[0].game_states.device
+    def sample(self, batch_size: int, all_games=[]) -> List[TrainElement]:
+        if len(all_games) == 0:
+            all_games = self.flatten_games()
 
-        samples = set()
+        samples = []
         while len(samples) < batch_size:
             game_stat = random.choice(all_games)
 
-            start_pos = torch.randint(low=0, high=game_stat.episode_len.max(), size=(len(game_stat.episode_len),)).to(device)
-            start_pos -= self.hparams.num_unroll_steps
-            start_pos = torch.where(start_pos <= 0, 0, start_pos)
-            start_pos = torch.where(start_pos+self.hparams.num_unroll_steps>=game_stat.episode_len, 0, start_pos)
+            max_start_pos = game_stat.episode_len.max() - self.hparams.num_unroll_steps
+            if max_start_pos > 0:
+                start_pos = torch.randint(low=0, high=max_start_pos, size=(len(game_stat.episode_len),)).to(self.hparams.device)
+            else:
+                start_pos = torch.zeros_like(game_stat.episode_len)
+
+            start_pos = torch.where(start_pos+self.hparams.num_unroll_steps>=game_stat.episode_len, 0, game_stat.episode_len-self.hparams.num_unroll_steps-1)
+            start_pos = torch.maximum(start_pos, torch.zeros_like(start_pos))
             #self.logger.info(f'epoch: {epoch}: start_pos: {start_pos.shape}: {start_pos[:10]}, episode_len: {game_stat.episode_len[:10]}')
 
             elms = game_stat.make_target(start_pos)
-            samples.update(elms)
+            samples += elms
 
-        return list(samples)
+        return samples
