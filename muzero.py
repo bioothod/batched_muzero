@@ -469,6 +469,7 @@ def main():
     parser.add_argument('--num_training_steps', type=int, default=40, help='Number of training steps before evaluation')
     parser.add_argument('--checkpoints_dir', type=str, required=True, help='Checkpoints directory')
     parser.add_argument('--game', type=str, required=True, help='Name of the game')
+    parser.add_argument('--batch_size', type=int, help='Training batch size')
     parser.add_argument('--online', action='store_true', help='Run online training, i.e. waiting for number of episodes made with the latest model and then training with them')
     FLAGS = parser.parse_args()
 
@@ -479,6 +480,8 @@ def main():
     module.hparams.num_simulations = FLAGS.num_eval_simulations
     module.hparams.num_training_steps = FLAGS.num_training_steps
     module.hparams.checkpoints_dir = FLAGS.checkpoints_dir
+    if FLAGS.batch_size:
+        module.hparams.batch_size = FLAGS.batch_size
     module.hparams.device = torch.device('cuda:0')
 
     logfile = os.path.join(module.hparams.checkpoints_dir, 'muzero.log')
