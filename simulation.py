@@ -122,6 +122,10 @@ class GameStats:
             dst = self.stored_tensors[key]
             if key == 'children_visits':
                 dst[index, :, episode_len] = value.detach().clone()
+                new_visits = dst[index, :, episode_len]
+
+                if torch.any(value != new_visits):
+                    raise ValueError(f'could not update tensor in place:\nvalue:\n{value[:10]}\nnew_visits:\n{new_visits}')
             elif key == 'dones':
                 dst[index] = value.detach().clone()
             elif key == 'game_states':
