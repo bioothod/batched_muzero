@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 class GameHparams:
     rows: int = 6
@@ -72,9 +73,11 @@ def encode_actions(hparams: GameHparams, actions: torch.Tensor) -> torch.Tensor:
     device = actions.device
     num_games = len(actions)
 
-    actions_enc = torch.zeros(num_games, 1, hparams.rows, hparams.columns, dtype=torch.float32, device=device)
-
-    actions_enc[:, 0, 0, actions] = 1
+    #actions_enc = torch.zeros(num_games, 1, hparams.rows, hparams.columns, dtype=torch.float32, device=device)
+    #actions_enc[:, 0, 0, actions] = 1
+    actions_enc = F.one_hot(actions, hparams.columns).unsqueeze(2).unsqueeze(3)
+    actions_enc = actions_enc.repeat(1, 1, hparams.rows, hparams.columns)
+    actions_enc = actions_enc.to(dtype=torch.float32, device=device)
     return actions_enc
 
 @torch.jit.script

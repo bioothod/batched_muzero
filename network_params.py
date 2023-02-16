@@ -51,7 +51,7 @@ class NetworkParams:
 
 class ConnectXParams(NetworkParams):
     num_stacked_states: int = 1
-    num_additional_planes: int = 1
+    num_additional_planes: int = 7
     kernel_size: int = 4
     conv_res_num_features: int = 64
 
