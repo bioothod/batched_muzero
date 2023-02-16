@@ -144,13 +144,26 @@ class Tree:
 
         probs = torch.softmax(policy_logits, 1).type(self.prior.dtype)
         self.prior.scatter_(1, children_index, probs)
+        # debug_max = 10
+        # self.logger.info(f'expand: new_simulation_index: {self.simulation_index}\n'
+        #                  f'parent_index: {parent_index.squeeze(1)[:debug_max]}\n'
+        #                  f'children_index:\n{children_index[:debug_max]}\n'
+        #                  f'probs:\n{probs[:debug_max]}\n'
+        #                  f'prior:\n{self.prior.gather(1, children_index).squeeze(1)[:debug_max]}')
 
     def value(self, batch_index: torch.Tensor, children_index: torch.Tensor) -> torch.Tensor:
         visit_count = self.visit_count[batch_index].gather(1, children_index)
         value_sum = self.value_sum[batch_index].gather(1, children_index)
 
         value = torch.where(visit_count == 0, 0, value_sum / visit_count)
-        return self.min_max_stats.normalize(value)
+        # debug_max = 10
+        # self.logger.info(f'value func: batch_index: {batch_index[:debug_max]}\n'
+        #                  f'children_index:\n{children_index[:debug_max]}\n'
+        #                  f'visit_count:\n{visit_count[:debug_max]}\n'
+        #                  f'value_sum:\n{value_sum[:debug_max]}\n'
+        #                  f'value:\n{value[:debug_max]}')
+        #return self.min_max_stats.normalize(value)
+        return value
 
     def add_exploration_noise(self, children_index: torch.Tensor, exploration_fraction: float):
         concentration = torch.ones([len(children_index), self.hparams.num_actions]).float() * self.hparams.dirichlet_alpha
@@ -180,28 +193,28 @@ class Tree:
         ucb_scores[not_max_indexes] = float('-inf')
         max_indexes = ucb_scores.argmax(dim=1)
 
-        # if depth_index < 20:
-        #     self.logger.info(f'depth: {depth_index}, select_children: batch_index: {batch_index[:max_debug]}, '
-        #                      f'node_index: {node_index[:max_debug]}, '
-        #                      f'children_index:\n{children_index[:max_debug]}\n'
-        #                      f'invalid_actions_mask:\n{invalid_actions_mask[:max_debug]}\n'
-        #                      f'max_masked_with_random_ucb_scores:\n{ucb_scores[:max_debug]}\n'
-        #                      f'max_scores_before_random:\n{max_scores[:max_debug]}, '
-        #                      f'max_indexes:\n{max_indexes[:max_debug]}')
+        # self.logger.info(f'select_children:\n'
+        #                  f'batch_index: {batch_index[:max_debug]}\n'
+        #                  f'node_index: {node_index.squeeze(1)[:max_debug]}\n'
+        #                  f'children_index:\n{children_index[:max_debug]}\n'
+        #                  f'invalid_actions_mask:\n{invalid_actions_mask[:max_debug]}\n'
+        #                  f'max_masked_with_random_ucb_scores:\n{ucb_scores[:max_debug]}\n'
+        #                  f'max_scores_before_random:\n{max_scores[:max_debug]}\n'
+        #                  f'max_indexes/action_indexes:\n{max_indexes[:max_debug]}')
 
         children_index = children_index.gather(1, max_indexes.unsqueeze(1))
         return max_indexes, children_index
 
     def ucb_scores(self, batch_index: torch.Tensor, parent_index: torch.Tensor, children_index: torch.Tensor) -> torch.Tensor:
         parent_visit_count = self.visit_count[batch_index].gather(1, parent_index)
-        children_visit_count = self.visit_count[batch_index].gather(1, children_index)
-        score = torch.log((parent_visit_count + self.hparams.pb_c_base + 1) / self.hparams.pb_c_base) + self.hparams.pb_c_init
-        score = score * torch.sqrt(parent_visit_count)
+        visits_score = torch.log((parent_visit_count + self.hparams.pb_c_base + 1) / self.hparams.pb_c_base) + self.hparams.pb_c_init
+        visits_score = visits_score * torch.sqrt(parent_visit_count)
 
-        score = score / (children_visit_count + 1)
+        children_visit_count = self.visit_count[batch_index].gather(1, children_index)
+        visits_score_norm = visits_score / (children_visit_count + 1)
 
         children_prior = self.prior[batch_index].gather(1, children_index)
-        prior_score = score * children_prior
+        prior_score = visits_score_norm * children_prior
 
         children_value = self.value(batch_index, children_index)
 
@@ -212,6 +225,8 @@ class Tree:
         # self.logger.info(f'ucb_scores: '
         #                  f'children_index:\n{children_index[:max_debug]}\n'
         #                  f'children_visit_counts:\n{children_visit_count[:max_debug]}\n'
+        #                  f'visits_score:\n{visits_score.squeeze(1)[:max_debug]}\n'
+        #                  f'visits_score_norm:\n{visits_score_norm[:max_debug]}\n'
         #                  f'children_prior:\n{children_prior[:max_debug]}\n'
         #                  f'prior_score:\n{prior_score[:max_debug]}\n'
         #                  f'children_value:\n{children_value[:max_debug]}\n'
@@ -225,34 +240,31 @@ class Tree:
             node_index = search_path[:, current_episode_len]
             node_index = node_index.unsqueeze(1)
 
-
             valid_episode_len_index = current_episode_len <= episode_len
-            current_value = torch.where(valid_episode_len_index, value, 0)
+            current_value = torch.where(valid_episode_len_index.unsqueeze(1), value, torch.zeros_like(value))
 
             node_multiplier = torch.where(player_id[:, current_episode_len-1] == last_player_id, 1, -1)
             node_multiplier = torch.where(valid_episode_len_index, node_multiplier, 0)
 
-            current_value *= node_multiplier
+            current_value *= node_multiplier.unsqueeze(1)
 
             # debug_max = 10
             # self.logger.info(f'backpropagate: '
             #                  f'current_episode_len: {current_episode_len}/{episode_len.max()}/{episode_len[:debug_max]}\n'
-            #                  f'self.player_id         : {self.player_id[batch_index, node_index][:debug_max]}\n'
-            #                  f'game_player_id_for_step: {game_player_id_for_step[:debug_max]}\n'
-            #                  f'node_index: {node_index.shape}\n{node_index[:debug_max]}\n'
+            #                  f'last_player_id:\n{last_player_id[:debug_max]}\n'
+            #                  f'player_id:\n{player_id[:debug_max, current_episode_len-1]}\n'
+            #                  f'node_index: {node_index.shape}\n{node_index.squeeze(1)[:debug_max]}\n'
             #                  f'node_multiplier: {node_multiplier[:debug_max]}\n'
-            #                  f'reward: {self.reward[batch_index, node_index][:debug_max]}\n'
-            #                  f'value batch/total: {value[batch_index].shape}/{value.shape}\n'
-            #                  f'batch: {value[batch_index][:debug_max]}\n'
-            #                  f'total: {value[:debug_max]}')
-
-            # debug_max = 10
-            # self.logger.info(f'backpropagate: '
-            #                  f'current_episode_len: {current_episode_len}/{episode_len.max()}/{episode_len[:debug_max]}\n'
-            #                  f'value: {value.shape}\n{value[:debug_max]}')
-
+            #                  f'reward: {self.reward.gather(1, node_index).squeeze(1)[:debug_max]}\n'
+            #                  f'value: {value.shape}\n'
+            #                  f'{value.squeeze(1)[:debug_max]}\n'
+            #                  f'current_value: {current_value.shape}\n{current_value.squeeze(1)[:debug_max]}\n'
+            #                  f'value_sum:\n{self.value_sum.gather(1, node_index).squeeze(1)[:debug_max]}')
 
             self.value_sum.scatter_add_(1, node_index, current_value)
+            #self.logger.info(f'backpropagate: updated value_sum:\n{self.value_sum.gather(1, node_index).squeeze(1)}')
+
+
             visit_count = torch.where(valid_episode_len_index, 1, 0).unsqueeze(1)
             self.visit_count.scatter_add_(1, node_index, visit_count)
 
@@ -315,11 +327,11 @@ class Tree:
             # self.logger.info(f'depth: {depth_index}\n'
             #                  f'player_id:\n{step_player_id[batch_index][:max_debug]}\n'
             #                  f'node_index: {node_index.shape}\n'
-            #                  f'{node_index[:max_debug]}\n'
+            #                  f'{node_index.squeeze(1)[:max_debug]}\n'
             #                  f'action_index: {action_index.shape}\n'
             #                  f'{action_index[:max_debug]}\n'
             #                  f'children_index: {children_index.shape}\n'
-            #                  f'{children_index[:max_debug]}')
+            #                  f'{children_index.squeeze(1)[:max_debug]}')
 
             search_path[batch_index, depth_index+1] = children_index.squeeze(1).detach().clone()
             actions[batch_index, depth_index] = action_index.detach().clone()
@@ -343,14 +355,14 @@ class Tree:
             last_episode = episode_len - 1
             last_episode = last_episode.unsqueeze(1)
 
-            parent_index = search_path.gather(1, episode_len.unsqueeze(1))
+            last_children_index = search_path.gather(1, episode_len.unsqueeze(1))
 
             # max_debug = 10
             # self.logger.info(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()+1]}')
             # self.logger.info(f'actions: {actions.shape}\n{actions[:max_debug, :episode_len.max()]}')
             # self.logger.info(f'player_id: {player_id.shape}\n{player_id[:max_debug, :episode_len.max()]}')
             # self.logger.info(f'episode_len: {episode_len[:max_debug]}, episode_len_max: {episode_len.max()}')
-            # self.logger.info(f'parent_index: {parent_index[:max_debug]}')
+            # self.logger.info(f'last_children_index: {last_children_index.squeeze(1)[:max_debug]}')
 
             hidden_states = self.load_states(search_path, episode_len)
 
@@ -360,9 +372,9 @@ class Tree:
             out = self.inference.recurrent(hidden_states, last_actions)
 
             self.store_states(search_path, episode_len+1, out.hidden_state)
-            self.reward.scatter_(1, parent_index, out.reward)
+            self.reward.scatter_(1, last_children_index, out.reward)
 
-            self.expand(parent_index, out.policy_logits)
+            self.expand(last_children_index, out.policy_logits)
             self.backpropagate(last_player_id, player_id, search_path, episode_len, out.value)
         except:
             # self.logger.error(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()+1]}')
