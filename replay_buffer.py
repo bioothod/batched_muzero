@@ -65,8 +65,9 @@ class ReplayBuffer:
         if len(all_games) == 0:
             all_games = self.flatten_games()
 
-        samples = []
-        while len(samples) < batch_size:
+        samples = set()
+        num_iterations = 0
+        while len(samples) < batch_size and num_iterations < 100:
             game_stat = random.choice(all_games)
 
             max_start_pos = game_stat.episode_len.max() - self.hparams.num_unroll_steps
@@ -80,6 +81,11 @@ class ReplayBuffer:
             #self.logger.info(f'epoch: {epoch}: start_pos: {start_pos.shape}: {start_pos[:10]}, episode_len: {game_stat.episode_len[:10]}')
 
             elms = game_stat.make_target(start_pos)
-            samples += elms
+            elms = set(elms)
+            elms = list(elms)
+            random.shuffle(elms)
+            #samples += elms[:128]
+            samples.update(elms[:32])
+            num_iterations += 1
 
-        return samples
+        return list(samples)
