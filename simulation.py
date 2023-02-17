@@ -181,7 +181,7 @@ class GameStats:
                 values[bootstrap_update_index] = self.root_values[valid_batch_index, bootstrap_index].float() * last_discount
 
             start_unroll_valid_bool_index = start_unroll_index < self.episode_len
-            start_unroll_valid_index = start_unroll_index[start_unroll_valid_bool_index]
+            #start_unroll_valid_index = start_unroll_index[start_unroll_valid_bool_index]
 
             rewards = torch.where(all_rewards_index < start_unroll_index.unsqueeze(1), 0, self.rewards)
             rewards = torch.where(all_rewards_index >= bootstrap_index.unsqueeze(1), 0, rewards)
@@ -191,8 +191,8 @@ class GameStats:
             discounted_rewards = discounted_rewards.sum(1)
             values += discounted_rewards
 
-            target_values[:, unroll_step] = (values + self.root_values[:, unroll_step]) / 2
-            #target_values[:, unroll_step] = values
+            #target_values[:, unroll_step] = (values + self.root_values[:, unroll_step]) / 2
+            target_values[:, unroll_step] = values
             target_children_visits[:, :, unroll_step] = self.children_visits[:, :, unroll_step].float()
             player_ids[:, unroll_step] = self.player_ids[:, unroll_step].long()
 
