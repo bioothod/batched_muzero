@@ -243,10 +243,10 @@ class Tree:
             valid_episode_len_index = current_episode_len <= episode_len
             current_value = torch.where(valid_episode_len_index.unsqueeze(1), value, torch.zeros_like(value))
 
-            node_multiplier = torch.where(player_id[:, current_episode_len-1] == last_player_id, 1, -1)
-            node_multiplier = torch.where(valid_episode_len_index, node_multiplier, 0)
+            # node_multiplier = torch.where(player_id[:, current_episode_len-1] == last_player_id, 1, -1)
+            # node_multiplier = torch.where(valid_episode_len_index, node_multiplier, 0)
 
-            current_value *= node_multiplier.unsqueeze(1)
+            # current_value *= node_multiplier.unsqueeze(1)
 
             # debug_max = 10
             # self.logger.info(f'backpropagate: '
