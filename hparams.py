@@ -37,7 +37,7 @@ class GenericHparams:
     num_steps_to_argmax_action_selection: int
     action_selection_temperature: float = 1
 
-    max_training_games: int = 100
+    max_training_games: int = 200
 
     server_port: int = 50051
     num_server_workers: int = 2
