@@ -43,8 +43,12 @@ class GenericHparams:
     num_server_workers: int = 2
 
     num_training_steps: int = 64
+    num_gradient_accumulation_steps: int = 8
+
+    max_gradient_norm: float = 1
+
     min_lr = 1e-5
-    init_lr = 1e-4
+    init_lr = 1e-3
 
 class ConnectXHparams(GenericHparams):
     checkpoints_dir: str = 'connectx_checkpoints_1'
@@ -57,10 +61,10 @@ class ConnectXHparams(GenericHparams):
     state_shape: List[int] = [6, 7]
     num_actions: int = 7
 
-    max_episode_len: int = 42
+    max_episode_len: int = 21
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 30
+    num_steps_to_argmax_action_selection: int = 16
     action_selection_temperature: float = 1
 
     num_unroll_steps: int = 5
@@ -77,11 +81,10 @@ class TicTacToeHparams(GenericHparams):
     state_shape: List[int] = [3, 3]
     num_actions: int = 9
 
-    max_episode_len: int = 9
+    max_episode_len: int = 5
     num_simulations: int = 800
 
     num_steps_to_argmax_action_selection: int = 4
-
 
     num_unroll_steps: int = 5
     td_steps: int = 9
