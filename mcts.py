@@ -235,7 +235,7 @@ class Tree:
         #                  f'score:\n{score[:max_debug]}')
         return score
 
-    def backpropagate(self, last_player_id: torch.Tensor, player_id: torch.Tensor, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
+    def backpropagate(self, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
         for current_episode_len in torch.arange(episode_len.max(), 0, step=-1).to(self.hparams.device):
             node_index = search_path[:, current_episode_len]
             node_index = node_index.unsqueeze(1)
@@ -243,16 +243,9 @@ class Tree:
             valid_episode_len_index = current_episode_len <= episode_len
             current_value = torch.where(valid_episode_len_index.unsqueeze(1), value, torch.zeros_like(value))
 
-            # node_multiplier = torch.where(player_id[:, current_episode_len-1] == last_player_id, 1, -1)
-            # node_multiplier = torch.where(valid_episode_len_index, node_multiplier, 0)
-
-            # current_value *= node_multiplier.unsqueeze(1)
-
             # debug_max = 10
             # self.logger.info(f'backpropagate: '
             #                  f'current_episode_len: {current_episode_len}/{episode_len.max()}/{episode_len[:debug_max]}\n'
-            #                  f'last_player_id:\n{last_player_id[:debug_max]}\n'
-            #                  f'player_id:\n{player_id[:debug_max, current_episode_len-1]}\n'
             #                  f'node_index: {node_index.shape}\n{node_index.squeeze(1)[:debug_max]}\n'
             #                  f'node_multiplier: {node_multiplier[:debug_max]}\n'
             #                  f'reward: {self.reward.gather(1, node_index).squeeze(1)[:debug_max]}\n'
@@ -263,7 +256,6 @@ class Tree:
 
             self.value_sum.scatter_add_(1, node_index, current_value)
             #self.logger.info(f'backpropagate: updated value_sum:\n{self.value_sum.gather(1, node_index).squeeze(1)}')
-
 
             visit_count = torch.where(valid_episode_len_index, 1, 0).unsqueeze(1)
             self.visit_count.scatter_add_(1, node_index, visit_count)
@@ -308,10 +300,9 @@ class Tree:
         hidden_states = torch.stack(hidden_states, 0).to(self.hparams.device)
         return hidden_states
 
-    def run_one_simulation(self, initial_player_id: torch.Tensor, invalid_actions_mask: torch.Tensor):
+    def run_one_simulation(self, invalid_root_actions_mask: torch.Tensor):
         search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long().to(self.hparams.device)
         actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
-        player_id = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len, dtype=torch.int64).to(self.hparams.device)
         episode_len = torch.zeros(self.hparams.batch_size, dtype=torch.int64, device=self.hparams.device)
         max_debug = 10
 
@@ -319,10 +310,9 @@ class Tree:
         node_index = torch.zeros(self.hparams.batch_size, 1).long().to(self.hparams.device)
 
         search_path[:, 0] = node_index.squeeze(1)
-        step_player_id = initial_player_id # initial_player_id is a copy, so it can be modified in place
 
         for depth_index in range(0, self.hparams.max_episode_len):
-            action_index, children_index = self.select_children(batch_index, node_index, invalid_actions_mask[batch_index])
+            action_index, children_index = self.select_children(batch_index, node_index, invalid_root_actions_mask[batch_index])
 
             # self.logger.info(f'depth: {depth_index}\n'
             #                  f'player_id:\n{step_player_id[batch_index][:max_debug]}\n'
@@ -336,7 +326,6 @@ class Tree:
             search_path[batch_index, depth_index+1] = children_index.squeeze(1).detach().clone()
             actions[batch_index, depth_index] = action_index.detach().clone()
             episode_len[batch_index] += 1
-            player_id[batch_index, depth_index] = step_player_id[batch_index].detach().clone()
 
 
             expanded_index = self.expanded[batch_index].gather(1, children_index).squeeze(1) == True
@@ -346,8 +335,6 @@ class Tree:
             #self.logger.info(f'depth: {depth_index}, node_index: {node_index.shape}\nnode_index: {node_index[:max_debug]}\nplayer_id: {player_id[batch_index][:max_debug, :episode_len.max()]}')
             if len(node_index) == 0:
                 break
-
-            step_player_id = player_id_change(self.hparams, step_player_id)
 
         try:
             episode_len = episode_len.long()
@@ -367,7 +354,6 @@ class Tree:
             hidden_states = self.load_states(search_path, episode_len)
 
             last_actions = actions.gather(1, last_episode).squeeze(1)
-            last_player_id = player_id.gather(1, last_episode).squeeze(1)
 
             out = self.inference.recurrent(hidden_states, last_actions)
 
@@ -375,7 +361,7 @@ class Tree:
             self.reward.scatter_(1, last_children_index, out.reward)
 
             self.expand(last_children_index, out.policy_logits)
-            self.backpropagate(last_player_id, player_id, search_path, episode_len, out.value)
+            self.backpropagate(search_path, episode_len, out.value)
         except:
             # self.logger.error(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()+1]}')
             # self.logger.error(f'actions: {actions.shape}\n{actions[:max_debug, :episode_len.max()]}')
