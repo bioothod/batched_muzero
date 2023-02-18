@@ -127,7 +127,7 @@ class Prediction(nn.Module):
                                              hparams.pred_hidden_linear_layers,
                                              1,
                                              hparams.activation,
-                                             output_activation=None)
+                                             output_activation=nn.Tanh)
 
     def forward(self, inputs):
         x = self.input_proj(inputs)
@@ -165,7 +165,7 @@ class Dynamic(nn.Module):
                              hparams.dyn_reward_linear_layers,
                              1,
                              hparams.activation,
-                             output_activation=None)
+                             output_activation=nn.Tanh)
             )
 
     def forward(self, inputs):
@@ -250,8 +250,10 @@ class GameState:
         return states
 
 
-class Inference:
+class Inference(nn.Module):
     def __init__(self, game_ctl: module_loader.GameModule, logger: logging.Logger):
+        super().__init__()
+
         self.logger = logger
         self.hparams = game_ctl.hparams
         self.game_ctl = game_ctl
@@ -262,21 +264,6 @@ class Inference:
         self.prediction = Prediction(game_ctl.network_hparams).to(self.hparams.device)
 
         self.dynamic = Dynamic(game_ctl.network_hparams).to(self.hparams.device)
-
-        self.models = [self.representation, self.prediction, self.dynamic]
-
-    def train(self, mode: bool):
-        for model in self.models:
-            model.train(mode)
-
-    def zero_grad(self):
-        for model in self.models:
-            model.zero_grad()
-
-    def to(self, device):
-        self.representation.to(device)
-        self.prediction.to(device)
-        self.dynamic.to(device)
 
     def initial(self, state: torch.Tensor) -> NetworkOutput:
         hidden_state = self.representation(state)
