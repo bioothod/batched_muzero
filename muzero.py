@@ -78,14 +78,11 @@ class Trainer:
 
         self.inference = networks.Inference(self.game_ctl, logger)
 
-        self.representation_opt = torch.optim.Adam(self.inference.representation.parameters(), lr=self.hparams.init_lr)
-        self.prediction_opt = torch.optim.Adam(self.inference.prediction.parameters(), lr=self.hparams.init_lr)
-        self.dynamic_opt = torch.optim.Adam(self.inference.dynamic.parameters(), lr=self.hparams.init_lr)
-        self.optimizers = [self.representation_opt, self.prediction_opt, self.dynamic_opt]
+        self.opt = torch.optim.Adam(self.inference.parameters(), lr=self.hparams.init_lr)
 
         self.ce_loss = nn.CrossEntropyLoss(reduction='none')
         #self.scalar_loss = nn.MSELoss(reduction='none')
-        self.scalar_loss = nn.HuberLoss(delta=1.1, reduction='none')
+        self.scalar_loss = nn.HuberLoss(delta=1, reduction='none')
 
         self.all_games: Dict[int, List[simulation.GameStats]] = defaultdict(list)
 
@@ -109,12 +106,12 @@ class Trainer:
         # children_visit_counts: [B, Nactions]
         children_visits_sum = children_visit_counts_for_step.sum(1, keepdim=True)
         action_probs = children_visit_counts_for_step / children_visits_sum
-        pred_probs = F.softmax(policy_logits, 1)
         loss = self.ce_loss(policy_logits, action_probs)
         return loss
 
         self.logger.info(f'policy_logits: {policy_logits[:10]}')
 
+        pred_probs = F.softmax(policy_logits, 1)
         action_log_probs = action_probs.log()
         pred_log_probs = pred_probs.log()
 
@@ -147,7 +144,7 @@ class Trainer:
         policy_loss_mean = policy_loss.mean()
         value_loss_mean = value_loss.mean()
         value_non_zero_loss_mean = value_loss[sample.start_index != 0].mean()
-        #reward_loss_mean = 0
+        reward_loss_mean = 0
 
         self.summary_writer.add_scalars('train/initial_losses', {
                 'policy': policy_loss_mean,
@@ -170,6 +167,9 @@ class Trainer:
                     f'loss': value_loss_local.mean(),
                 }, self.global_step)
 
+        scale = torch.ones_like(out.hidden_state, device=out.hidden_state.device) * 0.5
+        out.hidden_state = scale_gradient(out.hidden_state, scale)
+
         batch_index = torch.arange(len(sample))
         for step_idx in range(1, sample_len_max):
             len_idx = step_idx < sample.sample_len[batch_index]
@@ -178,32 +178,28 @@ class Trainer:
             actions = sample.actions[batch_index]
             values = sample.values[batch_index]
             children_visits = sample.children_visits[batch_index]
-            #rewards = sample.rewards[batch_index]
+            rewards = sample.rewards[batch_index]
 
             hidden_states = out.hidden_state[len_idx]
 
             last_actions = actions[:, step_idx-1]
             out = self.inference.recurrent(hidden_states, last_actions)
 
-            # scale = torch.ones_like(hidden_states, device=out.hidden_state.device) * 0.5
-            # hidden_states = scale_gradient(hidden_states, scale)
-
             policy_loss = self.policy_loss(out.policy_logits, children_visits[:, :, step_idx])
             value_loss = self.scalar_loss(out.value.squeeze(1), values[:, step_idx])
-            #reward_loss = self.scalar_loss(out.reward.squeeze(1), rewards[:, step_idx-1])
+            reward_loss = self.scalar_loss(out.reward.squeeze(1), rewards[:, step_idx-1])
 
-            #iteration_loss = policy_loss + value_loss + reward_loss
-            iteration_loss = policy_loss + value_loss
+            iteration_loss = policy_loss + value_loss + reward_loss
             iteration_loss = scale_gradient(iteration_loss, 1/sample_len)
 
             total_loss_mean += torch.mean(iteration_loss)
             policy_loss_mean += policy_loss.mean()
             value_loss_mean += value_loss.mean()
-            #reward_loss_mean += reward_loss.mean()
+            reward_loss_mean += reward_loss.mean()
 
         self.summary_writer.add_scalars('train/final_losses', {
                 'policy': policy_loss_mean,
-                #'reward': reward_loss_mean,
+                'reward': reward_loss_mean,
                 'value': value_loss_mean,
                 'total': total_loss_mean,
         }, self.global_step)
@@ -268,17 +264,26 @@ class Trainer:
 
         for _ in range(self.hparams.num_training_steps):
             start_time = perf_counter()
-            sample = self.replay_buffer.sample(batch_size=self.hparams.batch_size, all_games=all_games)[:self.hparams.batch_size]
-            random.shuffle(sample)
-            sample = train_element_collate_fn(sample)
-            sample = sample.to(self.hparams.device)
 
             # do not need to call optimizers zero_grad() because we are settig grads to zero in every model
             self.inference.zero_grad()
 
-            total_loss = self.training_step(sample)
+            total_losses = []
+            total_batch_size = 0
+            for _ in range(self.hparams.num_gradient_accumulation_steps):
+                sample = self.replay_buffer.sample(batch_size=self.hparams.batch_size, all_games=all_games)[:self.hparams.batch_size]
+                random.shuffle(sample)
+                sample = train_element_collate_fn(sample)
+                sample = sample.to(self.hparams.device)
+                total_batch_size += len(sample)
 
-            total_loss.backward()
+                total_loss = self.training_step(sample)
+                total_loss.backward()
+
+                total_losses.append(total_loss.item())
+
+            total_loss_mean = sum(total_losses) / len(total_losses)
+
             nn.utils.clip_grad_norm_(self.inference.representation.parameters(), 1)
             nn.utils.clip_grad_norm_(self.inference.prediction.parameters(), 1)
             nn.utils.clip_grad_norm_(self.inference.dynamic.parameters(), 1)
@@ -289,9 +294,9 @@ class Trainer:
             train_step_time = perf_counter() - start_time
 
             self.summary_writer.add_scalar('train/one_step_time', train_step_time, self.global_step)
-            self.summary_writer.add_scalar('train/batch_size', len(sample), self.global_step)
+            self.summary_writer.add_scalar('train/batch_size', total_batch_size, self.global_step)
 
-            self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
+            self.summary_writer.add_scalar('train/total_loss', total_loss_mean, self.global_step)
             self.summary_writer.add_scalars('train/num_games', {
                 'current': self.replay_buffer.num_games(),
                 'current_max': self.replay_buffer.max_num_games,
@@ -312,41 +317,60 @@ class Trainer:
 
         for _ in range(self.hparams.num_training_steps):
             start_time = perf_counter()
-            sample = self.replay_buffer.sample(batch_size=self.hparams.batch_size)[:self.hparams.batch_size]
-            random.shuffle(sample)
-            sample = train_element_collate_fn(sample)
-            sample = sample.to(self.hparams.device)
 
             # do not need to call optimizers zero_grad() because we are settig grads to zero in every model
             self.inference.zero_grad()
 
-            total_loss = self.training_step(sample)
+            total_losses = []
+            total_batch_size = 0
+            sample_start = []
+            sample_len = []
+            if self.global_step < 100:
+                num_gradient_accumulation_steps = 1
+            else:
+                num_gradient_accumulation_steps = self.hparams.num_gradient_accumulation_steps
 
-            total_loss.backward()
-            nn.utils.clip_grad_norm_(self.inference.representation.parameters(), 1)
-            nn.utils.clip_grad_norm_(self.inference.prediction.parameters(), 1)
-            nn.utils.clip_grad_norm_(self.inference.dynamic.parameters(), 1)
+            for _ in range(num_gradient_accumulation_steps):
+                with torch.no_grad():
+                    sample = self.replay_buffer.sample(batch_size=self.hparams.batch_size)[:self.hparams.batch_size]
+                    sample = train_element_collate_fn(sample)
+                    sample = sample.to(self.hparams.device)
+                    total_batch_size += len(sample)
+                    sample_start.append(sample.start_index)
+                    sample_len.append(sample.sample_len)
 
-            for opt in self.optimizers:
-                opt.step()
+                total_loss = self.training_step(sample) / num_gradient_accumulation_steps
+                total_loss.backward()
+
+                total_losses.append(total_loss.item())
+
+            total_loss_mean = sum(total_losses) / len(total_losses)
+            sample_start = torch.cat(sample_start, 0)
+            sample_len = torch.cat(sample_len, 0)
+
+            nn.utils.clip_grad_norm_(self.inference.representation.parameters(), self.hparams.max_gradient_norm)
+            nn.utils.clip_grad_norm_(self.inference.prediction.parameters(), self.hparams.max_gradient_norm)
+            nn.utils.clip_grad_norm_(self.inference.dynamic.parameters(), self.hparams.max_gradient_norm)
+
+            self.opt.step()
 
             train_step_time = perf_counter() - start_time
 
             self.summary_writer.add_scalar('train/one_step_time', train_step_time, self.global_step)
-            self.summary_writer.add_scalar('train/batch_size', len(sample), self.global_step)
+            self.summary_writer.add_scalar('train/batch_size', total_batch_size, self.global_step)
 
             self.summary_writer.add_scalars('train/start_index', {
-                'mean': sample.start_index.float().mean(),
-                'min': sample.start_index.min(),
-                'max': sample.start_index.max(),
+                'mean': sample_start.float().mean(),
+                'min': sample_start.min(),
+                'max': sample_start.max(),
             }, self.global_step)
             self.summary_writer.add_scalars('train/sample_len', {
-                'mean': sample.sample_len.float().mean(),
-                'min': sample.sample_len.min(),
-                'max': sample.sample_len.max(),
+                'mean': sample_len.float().mean(),
+                'min': sample_len.min(),
+                'max': sample_len.max(),
             }, self.global_step)
 
-            self.summary_writer.add_scalar('train/total_loss', total_loss, self.global_step)
+            self.summary_writer.add_scalar('train/total_loss', total_loss_mean, self.global_step)
             self.summary_writer.add_scalars('train/num_games', {
                 'current': self.replay_buffer.num_games(),
                 'current_max': self.replay_buffer.max_num_games,
@@ -357,7 +381,7 @@ class Trainer:
             self.global_step += 1
             self.save_muzero_server_weights()
 
-        self.run_evaluation(save_if_best=True)
+        self.run_evaluation(save_if_best=self.global_step > 100)
 
     def run_evaluation(self, save_if_best: bool):
         if self.eval_ds is None:
@@ -411,12 +435,8 @@ class Trainer:
 
     def save(self, checkpoint_path):
         torch.save({
-            'representation_state_dict': self.inference.representation.state_dict(),
-            'representation_optimizer_state_dict': self.representation_opt.state_dict(),
-            'prediction_state_dict': self.inference.prediction.state_dict(),
-            'prediction_optimizer_state_dict': self.prediction_opt.state_dict(),
-            'dynamic_state_dict': self.inference.dynamic.state_dict(),
-            'dynamic_optimizer_state_dict': self.dynamic_opt.state_dict(),
+            'state_dict': self.inference.state_dict(),
+            'optimizer_state_dict': self.opt.state_dict(),
             'global_step': self.global_step,
             'max_best_score': self.max_best_score,
             'max_good_score': self.max_good_score,
@@ -425,12 +445,8 @@ class Trainer:
     def load(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
 
-        self.inference.representation.load_state_dict(checkpoint['representation_state_dict'])
-        self.representation_opt.load_state_dict(checkpoint['representation_optimizer_state_dict'])
-        self.inference.prediction.load_state_dict(checkpoint['prediction_state_dict'])
-        self.prediction_opt.load_state_dict(checkpoint['prediction_optimizer_state_dict'])
-        self.inference.dynamic.load_state_dict(checkpoint['dynamic_state_dict'])
-        self.dynamic_opt.load_state_dict(checkpoint['dynamic_optimizer_state_dict'])
+        self.inference.load_state_dict(checkpoint['state_dict'])
+        self.opt.load_state_dict(checkpoint['optimizer_state_dict'])
 
         self.global_step = int(checkpoint['global_step'])
         self.max_best_score = float(checkpoint['max_best_score'])
@@ -467,6 +483,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_eval_simulations', type=int, default=400, help='Number of evaluation simulations')
     parser.add_argument('--num_training_steps', type=int, default=40, help='Number of training steps before evaluation')
+    parser.add_argument('--num_gradient_accumulation_steps', type=int, default=1, help='Number of accumulating gradient steps before running backward propagation of the error')
     parser.add_argument('--checkpoints_dir', type=str, required=True, help='Checkpoints directory')
     parser.add_argument('--game', type=str, required=True, help='Name of the game')
     parser.add_argument('--batch_size', type=int, help='Training batch size')
@@ -479,6 +496,7 @@ def main():
 
     module.hparams.num_simulations = FLAGS.num_eval_simulations
     module.hparams.num_training_steps = FLAGS.num_training_steps
+    module.hparams.num_gradient_accumulation_steps = FLAGS.num_gradient_accumulation_steps
     module.hparams.checkpoints_dir = FLAGS.checkpoints_dir
     if FLAGS.batch_size:
         module.hparams.batch_size = FLAGS.batch_size
