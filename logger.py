@@ -1,5 +1,4 @@
 import logging
-import os
 import sys
 
 def setup_logger(logname, logfile, log_to_stdout):
