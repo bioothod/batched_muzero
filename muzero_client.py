@@ -164,7 +164,6 @@ class MuzeroCollectionClient:
                 for player_id, game_stat in game_stats.items():
                     rewards = game_stat.rewards.float().sum(1)
                     episode_rewards[f'wins{player_id}'] = (rewards > 0).sum() / len(rewards)
-                    episode_rewards[f'looses{player_id}'] = (rewards < 0).sum() / len(rewards)
                     episode_rewards[f'draws'] = (rewards == 0).sum() / len(rewards)
 
                     episode_rewards_mean[f'{player_id}'] = rewards.mean()
