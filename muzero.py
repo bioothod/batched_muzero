@@ -81,13 +81,15 @@ class Trainer:
         self.opt = torch.optim.Adam(self.inference.parameters(), lr=self.hparams.init_lr)
 
         self.ce_loss = nn.CrossEntropyLoss(reduction='none')
-        #self.scalar_loss = nn.MSELoss(reduction='none')
-        self.scalar_loss = nn.HuberLoss(delta=1, reduction='none')
+        self.scalar_loss = nn.MSELoss(reduction='none')
+        #self.scalar_loss = nn.HuberLoss(delta=1, reduction='none')
 
         self.all_games: Dict[int, List[simulation.GameStats]] = defaultdict(list)
 
         self.try_load()
         self.save_muzero_server_weights()
+
+        self.start_training = time.time()
 
     def save_muzero_server_weights(self):
         save_dict = {
@@ -143,13 +145,11 @@ class Trainer:
 
         policy_loss_mean = policy_loss.mean()
         value_loss_mean = value_loss.mean()
-        value_non_zero_loss_mean = value_loss[sample.start_index != 0].mean()
         reward_loss_mean = 0
 
         self.summary_writer.add_scalars('train/initial_losses', {
                 'policy': policy_loss_mean,
                 'value': value_loss_mean,
-                'value_non_zero': value_non_zero_loss_mean,
                 'total': total_loss_mean,
         }, self.global_step)
 
@@ -307,7 +307,7 @@ class Trainer:
             self.global_step += 1
             self.save_muzero_server_weights()
 
-        self.run_evaluation(save_if_best=True)
+        self.run_evaluation(try_saving=True)
 
     def run_training_offline(self):
         while self.replay_buffer.num_games() == 0:
@@ -339,8 +339,11 @@ class Trainer:
                     sample_start.append(sample.start_index)
                     sample_len.append(sample.sample_len)
 
-                total_loss = self.training_step(sample) / num_gradient_accumulation_steps
+                total_loss = self.training_step(sample)
                 total_loss.backward()
+
+                # do not hold gpu memory
+                sample.to('cpu')
 
                 total_losses.append(total_loss.item())
 
@@ -381,10 +384,20 @@ class Trainer:
             self.global_step += 1
             self.save_muzero_server_weights()
 
-        self.run_evaluation(save_if_best=self.global_step > 100)
+        self.run_evaluation(try_saving=True)
 
-    def run_evaluation(self, save_if_best: bool):
+    def run_evaluation(self, try_saving: bool):
+        if try_saving and self.hparams.save_latest:
+            checkpoint_path = os.path.join(self.hparams.checkpoints_dir, f'muzero_latest.ckpt')
+            self.save(checkpoint_path)
+
         if self.eval_ds is None:
+            return
+
+        if time.time() < self.start_training + self.hparams.save_best_after_seconds:
+            return
+
+        if self.global_step < self.hparams.save_best_after_training_steps:
             return
 
         start_time = perf_counter()
@@ -421,17 +434,18 @@ class Trainer:
             'best': total_best_score,
         }, self.global_step)
 
-        if save_if_best and (total_best_score >= self.max_best_score):
+        if try_saving and (total_best_score >= self.max_best_score):
             self.max_best_score = total_best_score
             checkpoint_path = os.path.join(self.hparams.checkpoints_dir, f'muzero_best_{total_best_score:.1f}.ckpt')
             self.save(checkpoint_path)
             self.logger.info(f'stored checkpoint: generation: {self.global_step}, best_score: {total_best_score:.1f}, checkpoint: {checkpoint_path}')
 
-        if save_if_best and (total_good_score >= self.max_good_score):
+        if try_saving and (total_good_score >= self.max_good_score):
             self.max_good_score = total_good_score
             checkpoint_path = os.path.join(self.hparams.checkpoints_dir, f'muzero_good_{total_good_score:.1f}.ckpt')
             self.save(checkpoint_path)
             self.logger.info(f'stored checkpoint: generation: {self.global_step}, good_score: {total_good_score:.1f}, checkpoint: {checkpoint_path}')
+
 
     def save(self, checkpoint_path):
         torch.save({
@@ -457,6 +471,14 @@ class Trainer:
         self.logger.info(f'loaded checkpoint {checkpoint_path}')
 
     def try_load(self):
+        if self.hparams.load_latest:
+            checkpoint_path = os.path.join(self.hparams.checkpoints_dir, 'muzero_latest.ckpt')
+            try:
+                self.load(checkpoint_path)
+                return
+            except:
+                pass
+
         max_score = None
         max_score_fn = None
         for fn in os.listdir(self.hparams.checkpoints_dir):
@@ -481,12 +503,16 @@ def main():
     #torch.autograd.set_detect_anomaly(True)
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('--batch_size', type=int, help='Training batch size')
     parser.add_argument('--num_eval_simulations', type=int, default=400, help='Number of evaluation simulations')
     parser.add_argument('--num_training_steps', type=int, default=40, help='Number of training steps before evaluation')
     parser.add_argument('--num_gradient_accumulation_steps', type=int, default=1, help='Number of accumulating gradient steps before running backward propagation of the error')
     parser.add_argument('--checkpoints_dir', type=str, required=True, help='Checkpoints directory')
     parser.add_argument('--game', type=str, required=True, help='Name of the game')
-    parser.add_argument('--batch_size', type=int, help='Training batch size')
+    parser.add_argument('--save_latest', action='store_true', default=False, help='Save a checkpoint after each training epoch')
+    parser.add_argument('--load_latest', action='store_true', default=False, help='Whether to load the latest checkpoint instead of the best metrics')
+    parser.add_argument('--save_best_after_seconds', type=int, default=0, help='Start saving best checkpoints only after this number of seconds has passed after the start')
+    parser.add_argument('--save_best_after_training_steps', type=int, default=0, help='Start saving best checkpoints only after this number of training steps has passed')
     parser.add_argument('--online', action='store_true', help='Run online training, i.e. waiting for number of episodes made with the latest model and then training with them')
     FLAGS = parser.parse_args()
 
@@ -501,6 +527,10 @@ def main():
     if FLAGS.batch_size:
         module.hparams.batch_size = FLAGS.batch_size
     module.hparams.device = torch.device('cuda:0')
+    module.hparams.save_best_after_training_steps = FLAGS.save_best_after_training_steps
+    module.hparams.save_best_after_seconds = FLAGS.save_best_after_seconds
+    module.hparams.save_latest = FLAGS.save_latest
+    module.hparams.load_latest = FLAGS.load_latest
 
     logfile = os.path.join(module.hparams.checkpoints_dir, 'muzero.log')
     os.makedirs(module.hparams.checkpoints_dir, exist_ok=True)
