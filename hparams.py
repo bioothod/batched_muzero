@@ -43,9 +43,14 @@ class GenericHparams:
     num_server_workers: int = 2
 
     num_training_steps: int = 64
-    num_gradient_accumulation_steps: int = 8
+    num_gradient_accumulation_steps: int = 2
 
     max_gradient_norm: float = 1
+
+    save_latest: bool = True
+    load_latest: bool = False
+    save_best_after_seconds: int = 0
+    save_best_after_training_steps: int = 0
 
     min_lr = 1e-5
     init_lr = 1e-3
@@ -64,7 +69,7 @@ class ConnectXHparams(GenericHparams):
     max_episode_len: int = 21
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 16
+    num_steps_to_argmax_action_selection: int = 4
     action_selection_temperature: float = 1
 
     num_unroll_steps: int = 5
