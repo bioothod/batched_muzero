@@ -88,7 +88,7 @@ class Representation(nn.Module):
         super().__init__()
 
         self.input_proj = nn.Sequential(
-            nn.Conv2d(2*hparams.num_stacked_states+2,
+            nn.Conv2d(2*hparams.num_stacked_states,
                       hparams.conv_res_num_features,
                       1,
                       padding='same'),
@@ -127,7 +127,7 @@ class Prediction(nn.Module):
                                              hparams.pred_hidden_linear_layers,
                                              1,
                                              hparams.activation,
-                                             output_activation=nn.Tanh)
+                                             output_activation=None)
 
     def forward(self, inputs):
         x = self.input_proj(inputs)
@@ -165,7 +165,7 @@ class Dynamic(nn.Module):
                              hparams.dyn_reward_linear_layers,
                              1,
                              hparams.activation,
-                             output_activation=nn.Tanh)
+                             output_activation=None)
             )
 
     def forward(self, inputs):
@@ -203,8 +203,25 @@ class GameState:
         player_ids = tuple([pid.detach().cpu().numpy().tostring() for pid in self.game_player_ids])
         return [states, player_ids]
 
+    def revert_state(self, pov_player_id: int, local_player_id: int, game_state: torch.Tensor) -> torch.Tensor:
+        new_state = torch.zeros_like(game_state)
+        new_state[game_state == pov_player_id] = local_player_id
+        new_state[game_state == local_player_id] = pov_player_id
+        return new_state
+
     def push_game(self, player_id: torch.Tensor, game_state: torch.Tensor):
-        self.game_stack.append(game_state.detach().clone())
+        converted_game_state = torch.zeros_like(game_state)
+
+        pov_player_id = self.player_ids[0]
+        for local_player_id in self.player_ids:
+            index = player_id == local_player_id
+
+            if local_player_id == pov_player_id:
+                converted_game_state[index] = game_state[index]
+            else:
+                converted_game_state[index] = self.revert_state(pov_player_id, local_player_id, game_state[index])
+
+        self.game_stack.append(converted_game_state)
         self.game_player_ids.append(player_id.detach().clone())
 
         self.game_stack.popleft()
@@ -220,7 +237,7 @@ class GameState:
             self.game_player_ids.append(torch.zeros(len(state)))
 
     def create_state(self):
-        states = torch.zeros(len(self.player_ids)*self.num_games+len(self.player_ids), self.batch_size, *self.state_shape).to(self.device)
+        states = torch.zeros(self.num_games*len(self.player_ids), self.batch_size, *self.state_shape).to(self.device)
 
         # states design:
         # for a number of stacked games:
@@ -233,18 +250,11 @@ class GameState:
             index = index.squeeze(1)
             return index
 
-        for plane_idx, local_player_id in enumerate(self.player_ids):
-            index = self.game_player_ids[-1] == local_player_id
-            states[plane_idx, index] = 1
+        for game_idx, game_state in enumerate(self.game_stack):
+            offset = game_idx * len(self.player_ids)
 
-        for game_idx, (player_id, game_state) in enumerate(zip(self.game_player_ids, self.game_stack)):
-            offset = len(self.player_ids) + game_idx * len(self.player_ids)
-            states[offset + 0, get_index_for_player_id(game_state, player_id[0])] = 1
-
-            for local_player_id in self.player_ids:
-                # only initial inference calls @create_states(), so player_id is the same inside given tensor
-                if local_player_id != player_id[0]:
-                    states[offset + 1, get_index_for_player_id(game_state, local_player_id)] = 1
+            for local_idx, local_player_id in enumerate(self.player_ids):
+                states[offset+local_idx, get_index_for_player_id(game_state, local_player_id)] = 1
 
         states = torch.transpose(states, 1, 0)
         return states
