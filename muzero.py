@@ -163,12 +163,9 @@ class Trainer:
 
                 self.summary_writer.add_scalars(f'train/initial_values{player_id}', {
                     f'pred': pred_values.mean(),
-                    f'true': true_values.mean(),
+                    f'true_target': true_values.mean(),
                     f'loss': value_loss_local.mean(),
                 }, self.global_step)
-
-        scale = torch.ones_like(out.hidden_state, device=out.hidden_state.device) * 0.5
-        out.hidden_state = scale_gradient(out.hidden_state, scale)
 
         batch_index = torch.arange(len(sample))
         for step_idx in range(1, sample_len_max):
@@ -184,6 +181,9 @@ class Trainer:
 
             last_actions = actions[:, step_idx-1]
             out = self.inference.recurrent(hidden_states, last_actions)
+
+            scale = torch.ones_like(out.hidden_state, device=out.hidden_state.device) * 0.5
+            out.hidden_state = scale_gradient(out.hidden_state, scale)
 
             policy_loss = self.policy_loss(out.policy_logits, children_visits[:, :, step_idx])
             value_loss = self.scalar_loss(out.value.squeeze(1), values[:, step_idx])
@@ -288,8 +288,7 @@ class Trainer:
             nn.utils.clip_grad_norm_(self.inference.prediction.parameters(), 1)
             nn.utils.clip_grad_norm_(self.inference.dynamic.parameters(), 1)
 
-            for opt in self.optimizers:
-                opt.step()
+            self.opt.step()
 
             train_step_time = perf_counter() - start_time
 
@@ -415,7 +414,7 @@ class Trainer:
             game_state_stack.push_game(active_player_ids, active_game_states)
             game_states = game_state_stack.create_state()
 
-            pred_actions, children_visits, root_values = train.run_simulations(active_player_ids, game_states, invalid_actions_mask)
+            pred_actions, children_visits, root_values, out_initial = train.run_simulations(active_player_ids, game_states, invalid_actions_mask)
 
         best_score, good_score, total_best_score, total_good_score = self.eval_ds.evaluate(pred_actions)
 
