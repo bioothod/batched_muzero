@@ -65,9 +65,11 @@ class ConnectXParams(NetworkParams):
     dyn_conv_num_blocks: int = 8
     dyn_reward_linear_layers: List[int] = [128]
 
-    activation_str: str = 'LeakyReLU'
+    activation_str: str = 'ReLU'
+    #activation_str: str = 'LeakyReLU'
     activation_args: List = []
-    activation_kwargs: Dict = {'negative_slope': 0.01, 'inplace': True}
+    #activation_kwargs: Dict = {'negative_slope': 0.01, 'inplace': True}
+    activation_kwargs: Dict = {'inplace': True}
 
 class TicTacToeParams(NetworkParams):
     kernel_size: int = 3
