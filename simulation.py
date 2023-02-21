@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from time import perf_counter
 
 import torch
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 from hparams import GenericHparams as Hparams
@@ -71,6 +72,8 @@ class GameStats:
     player_ids: torch.Tensor
     dones: torch.Tensor
     game_states: List[torch.Tensor]
+    initial_values: torch.Tensor
+    initial_policy_probs: torch.Tensor
 
     def __init__(self, hparams: Hparams, logger: logging.Logger):
         self.logger = logger
@@ -79,7 +82,9 @@ class GameStats:
         self.episode_len = torch.zeros(hparams.batch_size, dtype=torch.int64, device=hparams.device)
         self.rewards = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
         self.root_values = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
+        self.initial_values = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
         self.children_visits = torch.zeros(hparams.batch_size, hparams.num_actions, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
+        self.initial_policy_probs = torch.zeros(hparams.batch_size, hparams.num_actions, hparams.max_episode_len, dtype=torch.float32, device=hparams.device)
         self.actions = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
         self.player_ids = torch.zeros(hparams.batch_size, hparams.max_episode_len, dtype=torch.int64, device=hparams.device)
         self.dones = torch.zeros(hparams.batch_size, dtype=torch.bool, device=hparams.device)
@@ -94,6 +99,8 @@ class GameStats:
             'player_ids': self.player_ids,
             'dones': self.dones,
             'game_states': self.game_states,
+            'initial_values': self.initial_values,
+            'initial_policy_probs': self.initial_policy_probs,
         }
 
     def to(self, device):
@@ -121,7 +128,7 @@ class GameStats:
                 raise ValueError(msg)
 
             dst = self.stored_tensors[key]
-            if key == 'children_visits':
+            if key == 'children_visits' or key == 'initial_policy_probs':
                 dst[index, :, episode_len] = value.detach().clone()
                 new_visits = dst[index, :, episode_len]
 
@@ -202,8 +209,8 @@ class GameStats:
             discounted_rewards = discounted_rewards.sum(1)
             values += discounted_rewards
 
-            target_values[:, unroll_step] = (values + self.root_values[:, unroll_step]) / 2
-            #target_values[:, unroll_step] = values
+            #target_values[:, unroll_step] = (values + self.root_values[:, unroll_step]) / 2
+            target_values[:, unroll_step] = values
             target_children_visits[:, :, unroll_step] = self.children_visits[:, :, unroll_step].float()
             player_ids[:, unroll_step] = self.player_ids[:, unroll_step].long()
 
@@ -293,7 +300,7 @@ class Train:
         #                  f'children_visits:\n{children_visits[:max_debug]}\n'
         #                  f'root_values: {root_values.shape}\n{root_values[:max_debug]}\n'
         #                  f'actions:\n{actions[:max_debug]}')
-        return actions, children_visit_counts, root_values
+        return actions, children_visit_counts, root_values, out
 
 def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int, GameStats]:
     game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.float32, device=hparams.device)
@@ -316,24 +323,33 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int,
         game_state_stacks[player_id].push_game(player_ids, game_states)
         game_state_stack_converted = game_state_stacks[player_id].create_state()
 
-        actions, children_visits, root_values = train.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask)
+        actions, children_visits, root_values, out_initial = train.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask)
         new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
         game_states[active_games_index] = new_game_states.detach().clone()
 
         train.game_stats[player_id].append(active_games_index, {
             'children_visits': children_visits,
+            'initial_values': out_initial.value.squeeze(1),
+            'initial_policy_probs': F.softmax(out_initial.policy_logits, 1),
             'root_values': root_values,
-            'game_states': game_state_stack_converted, # needs to save whole tensor of batch_size size
             'rewards': rewards,
             'actions': actions,
             'dones': dones,
             'player_ids': active_player_ids,
+
+            # needs to save the whole tensor of batch_size size, because we use a list of those, not copying them into a single tensor like other fields here
+            'game_states': game_state_stack_converted,
         })
 
-        win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
         other_player_id = mcts.player_id_change(hparams, torch.tensor(player_id)).item()
+
+        win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
         other_rewards = torch.ones_like(win_index).float() * -1
         train.game_stats[other_player_id].update_last_reward_and_values(win_index, other_rewards)
+
+        lose_index = active_games_index[torch.logical_and((dones == True), (rewards < 0))]
+        other_rewards = torch.ones_like(lose_index).float() * 1
+        train.game_stats[other_player_id].update_last_reward_and_values(lose_index, other_rewards)
 
         # max_debug = 10
         # train.logger.info(f'game:\n{game_states[0].detach().cpu().numpy().astype(int)}\n'
