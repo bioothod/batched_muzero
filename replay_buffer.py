@@ -69,7 +69,7 @@ class ReplayBuffer:
         num_iterations = 0
         while len(samples) < batch_size and num_iterations < 200:
             game_stat = random.choice(all_games)
-            random_index = random.sample(range(len(game_stat.episode_len)), 32)
+            random_index = random.sample(range(len(game_stat.episode_len)), 64)
             game_stat = game_stat.index(random_index)
 
 
