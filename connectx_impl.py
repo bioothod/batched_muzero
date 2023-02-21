@@ -99,7 +99,7 @@ def step_games(hparams: GameHparams, games: torch.Tensor, player_id: torch.Tenso
     rewards[invalid_action_index_batch] = torch.tensor(hparams.invalid_action_reward, dtype=torch.float32)
     dones[invalid_action_index_batch] = True
 
-    num_zeros = torch.count_nonzero(games[:, 0, :] == 0, -1)
+    num_zeros = (games[:, 0, :] == 0).sum(-1)
     finished_index = num_zeros == 0
     dones[finished_index] = True
 
