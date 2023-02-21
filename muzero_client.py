@@ -137,20 +137,23 @@ class MuzeroCollectionClient:
 
                     prefix = f'{self.client_id}_{player_id}'
 
-                    for i in range(8):
+                    for i in [0, 1, 2, 4]:
                         valid_index = game_stat.episode_len > i
 
                         if valid_index.sum() > 0:
                             children_visits = game_stat.children_visits[valid_index, :, i].float()
                             children_visits = children_visits / children_visits.sum(1, keepdim=True)
-                            children_visits = {str(action):children_visits[:, action].mean(0) for action in range(children_visits.shape[-1])}
+                            actions = range(children_visits.shape[-1])
+                            children_visits = {str(action):children_visits[:, action].mean(0) for action in actions}
+                            initial_policy_probs = {str(action):game_stat.initial_policy_probs[valid_index, action, i].mean(0) for action in actions}
+
                             self.summary_writer.add_scalars(f'{prefix}/children_visits{i}', children_visits, self.generation)
+                            self.summary_writer.add_scalars(f'{prefix}/pred_policy_probs{i}', initial_policy_probs, self.generation)
 
-                            #actions = game_stat.actions[valid_index, i]
-                            #self.summary_writer.add_histogram(f'{prefix}/actions{i}', actions, self.generation)
-
-                    self.summary_writer.add_scalar(f'{prefix}/root_values', game_stat.root_values[:, 0].float().mean(), self.generation)
-                    #self.summary_writer.add_histogram(f'{prefix}/train_steps', game_stat.episode_len, self.generation)
+                    self.summary_writer.add_scalars(f'{prefix}/root_values', {
+                        'mcts': game_stat.root_values[:, 0].float().mean(),
+                        'initial_pred': game_stat.initial_values[:, 0].mean(),
+                    }, self.generation)
 
                     self.summary_writer.add_scalars(f'{prefix}/train_steps', {
                         'min': game_stat.episode_len.min(),
