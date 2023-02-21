@@ -219,6 +219,7 @@ class Tree:
         children_value = self.value(batch_index, children_index)
 
         value_score = self.reward[batch_index].gather(1, children_index) + self.hparams.value_discount * children_value
+        #value_score = self.min_max_stats.normalize(value_score)
         score = prior_score + value_score
 
         # max_debug = 10
@@ -236,6 +237,7 @@ class Tree:
         return score
 
     def backpropagate(self, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
+        batch_index = torch.arange(len(search_path)).to(search_path.device)
         for current_episode_len in torch.arange(episode_len.max(), 0, step=-1).to(self.hparams.device):
             node_index = search_path[:, current_episode_len]
             node_index = node_index.unsqueeze(1)
@@ -261,7 +263,7 @@ class Tree:
             self.visit_count.scatter_add_(1, node_index, visit_count)
 
             value = self.reward.gather(1, node_index) + self.hparams.value_discount * value
-            self.min_max_stats.update(value)
+            #self.min_max_stats.update(self.value(batch_index[valid_episode_len_index], node_index[valid_episode_len_index]))
 
         zeros_index = torch.zeros(len(episode_len), 1, dtype=torch.int64, device=self.value_sum.device)
         self.value_sum.scatter_add_(1, zeros_index, value)
