@@ -56,14 +56,14 @@ class ConnectXParams(NetworkParams):
     conv_res_num_features: int = 64
 
     repr_features_dropout: float = 0.
-    repr_conv_num_blocks: int = 8
+    repr_conv_num_blocks: int = 6
 
-    pred_hidden_linear_layers: List[int] = [512, 128]
+    pred_hidden_linear_layers: List[int] = [512, 256]
     num_actions: int = 0
 
     dyn_reward_dropout: float = 0.
-    dyn_conv_num_blocks: int = 8
-    dyn_reward_linear_layers: List[int] = [128]
+    dyn_conv_num_blocks: int = 3
+    dyn_reward_linear_layers: List[int] = [128, 128]
 
     activation_str: str = 'ReLU'
     #activation_str: str = 'LeakyReLU'

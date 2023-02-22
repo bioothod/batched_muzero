@@ -18,15 +18,11 @@ class NetworkOutput:
     policy_logits: torch.Tensor
     value: torch.Tensor
 
-    def __init__(self, reward: torch.Tensor, hidden_state: torch.Tensor, policy_logits: torch.Tensor, value: Optional[torch.Tensor] = None):
+    def __init__(self, reward: torch.Tensor, hidden_state: torch.Tensor, policy_logits: torch.Tensor, value: torch.Tensor):
         self.reward = reward
         self.hidden_state = hidden_state
         self.policy_logits = policy_logits
-
-        if value is not None:
-            self.value = value
-        else:
-            self.value = torch.zeros_like(reward)
+        self.value = value
 
 class ResidualBlock(nn.Module):
     def __init__(self, num_features, kernel_size, activation):
@@ -48,12 +44,12 @@ class ResidualBlock(nn.Module):
 
     def forward(self, inputs):
         x = self.b0(inputs)
-        x = self.activation0(x)
         x = self.conv0(x)
+        x = self.activation0(x)
 
         x = self.b1(x)
-        x = self.activation1(x)
         x = self.conv1(x)
+        x = self.activation1(x)
         x = x + inputs
 
         return x
@@ -140,21 +136,21 @@ class Dynamic(nn.Module):
         super().__init__()
 
         num_input_features = hparams.conv_res_num_features + hparams.num_additional_planes
-        self.input_proj = nn.Sequential(
-            #nn.BatchNorm2d(num_input_features),
-            #nn.LeakyReLU(inplace=True),
-            nn.Conv2d(num_input_features, hparams.conv_res_num_features, 1, padding='same'),
-        )
 
         res_blocks = []
         for _ in range(hparams.repr_conv_num_blocks):
             block = ResidualBlock(
-                num_features=hparams.conv_res_num_features,
+                num_features=num_input_features,
                 kernel_size=hparams.kernel_size,
                 activation=hparams.activation)
             res_blocks.append(block)
 
         self.conv_blocks = nn.Sequential(*res_blocks)
+
+        self.output_proj = nn.Sequential(
+            nn.Conv2d(num_input_features, hparams.conv_res_num_features, 1, padding='same'),
+            nn.ReLU(inplace=True),
+        )
 
         num_input_features = hparams.conv_res_num_features * np.prod(hparams.observation_shape)
         self.output_reward = nn.Sequential(
@@ -169,9 +165,8 @@ class Dynamic(nn.Module):
             )
 
     def forward(self, inputs):
-        x = self.input_proj(inputs)
-        x = self.conv_blocks(x)
-
+        x = self.conv_blocks(inputs)
+        x = self.output_proj(x)
         reward = self.output_reward(x)
         return x, reward
 
