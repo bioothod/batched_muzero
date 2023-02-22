@@ -104,14 +104,12 @@ class GameStats:
         }
 
     def to(self, device):
-        self.episode_len = self.episode_len.to(device)
-        self.rewards = self.rewards.to(device)
-        self.root_values = self.root_values.to(device)
-        self.children_visits = self.children_visits.to(device)
-        self.actions = self.actions.to(device)
-        self.player_ids = self.player_ids.to(device)
-        self.dones = self.dones.to(device)
-        self.game_states = [state.to(device) for state in self.game_states]
+        for key, tensor in self.stored_tensors.items():
+            if key == 'game_states':
+                self.game_states = [state.to(device) for state in self.game_states]
+            else:
+                tensor.to(device)
+
         return self
 
     def __len__(self):
@@ -187,11 +185,13 @@ class GameStats:
             bootstrap_index = start_unroll_index + td_steps
             bootstrap_update_index = bootstrap_index < self.episode_len
 
-            # self.logger.info(f'{unroll_index}: '
-            #              f'start_index: {start_index.cpu().numpy()}, '
-            #              f'current_index: {current_index.cpu().numpy()}, '
-            #              f'bootstrap_index: {bootstrap_index.cpu().numpy()}, '
-            #              f'bootstrap_update_index: {bootstrap_update_index.cpu().numpy()}/{bootstrap_update_index.shape}, '
+            # self.logger.info(f'make_target: {unroll_step}:\n'
+            #                  f'start_index: {start_index}\n'
+            #                  f'start_unroll_index: {start_unroll_index}\n'
+            #                  f'bootstrap_index: {bootstrap_index}\n'
+            #                  f'bootstrap_update_index: {bootstrap_update_index}\n'
+            #                  f'children_visits: {self.children_visits.shape}\n{self.children_visits[:10]}\n'
+            #                  f'{self.children_visits[0]}\n'
             #              )
             values = torch.zeros(len(start_index), device=start_index.device).float()
             if bootstrap_update_index.sum() > 0:
@@ -211,11 +211,13 @@ class GameStats:
 
             #target_values[:, unroll_step] = (values + self.root_values[:, unroll_step]) / 2
             target_values[:, unroll_step] = values
-            target_children_visits[:, :, unroll_step] = self.children_visits[:, :, unroll_step].float()
-            player_ids[:, unroll_step] = self.player_ids[:, unroll_step].long()
 
-            target_rewards[:, unroll_step] = self.rewards[:, unroll_step].float()
-            taken_actions[:, unroll_step] = self.actions[:, unroll_step].long()
+            batch_index = torch.arange(len(start_index), device=start_index.device)
+            target_children_visits[batch_index, :, unroll_step] = self.children_visits[batch_index, :, start_unroll_index].float()
+            player_ids[batch_index, unroll_step] = self.player_ids[batch_index, start_unroll_index].long()
+
+            target_rewards[batch_index, unroll_step] = self.rewards[batch_index, start_unroll_index].float()
+            taken_actions[batch_index, unroll_step] = self.actions[batch_index, start_unroll_index].long()
 
             sample_len[start_unroll_valid_bool_index] += 1
 
