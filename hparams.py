@@ -69,7 +69,7 @@ class ConnectXHparams(GenericHparams):
     max_episode_len: int = 21
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 4
+    num_steps_to_argmax_action_selection: int = 8
     action_selection_temperature: float = 1
 
     num_unroll_steps: int = 5
