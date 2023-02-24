@@ -183,7 +183,7 @@ class Trainer:
             last_actions = actions[:, step_idx-1]
             out = self.inference.recurrent(hidden_states, last_actions)
 
-            scale = torch.ones_like(out.hidden_state, device=out.hidden_state.device) * 0.8
+            scale = torch.ones_like(out.hidden_state, device=out.hidden_state.device) * self.hparams.hidden_state_scale
             out.hidden_state = scale_gradient(out.hidden_state, scale)
 
             policy_loss = self.policy_loss(out.policy_logits, children_visits[:, :, step_idx])

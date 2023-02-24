@@ -31,6 +31,8 @@ class GenericHparams:
 
     player_ids: List[int] = [1, 2]
 
+    hidden_state_scale: float = 0.5
+
     num_unroll_steps: int = 5
     td_steps: int
 
