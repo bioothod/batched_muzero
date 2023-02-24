@@ -25,6 +25,7 @@ from matplotlib.lines import Line2D
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
+import checkpoints
 from evaluate_score import EvaluationDataset
 from hparams import GenericHparams as Hparams
 from logger import setup_logger
@@ -470,31 +471,8 @@ class Trainer:
         self.logger.info(f'loaded checkpoint {checkpoint_path}')
 
     def try_load(self):
-        if self.hparams.load_latest:
-            checkpoint_path = os.path.join(self.hparams.checkpoints_dir, 'muzero_latest.ckpt')
-            try:
-                self.load(checkpoint_path)
-                return
-            except:
-                pass
-
-        max_score = None
-        max_score_fn = None
-        for fn in os.listdir(self.hparams.checkpoints_dir):
-            if not fn.endswith('.ckpt'):
-                continue
-            if not fn.startswith('muzero_best_'):
-                continue
-
-            filename = os.path.splitext(fn)[0]
-            score_str = filename.split('_')[-1]
-            score = float(score_str)
-            if max_score is None or score > max_score:
-                max_score = score
-                max_score_fn = fn
-
-        if max_score_fn is not None:
-            checkpoint_path = os.path.join(self.hparams.checkpoints_dir, max_score_fn)
+        checkpoint_path = checkpoints.find_checkpoint(self.hparams.checkpoints_dir, self.hparams.load_latest)
+        if checkpoint_path is not None:
             self.load(checkpoint_path)
 
 
