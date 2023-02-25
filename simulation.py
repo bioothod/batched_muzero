@@ -259,8 +259,6 @@ class Simulation:
 
         self.action_selection_fn = action_selection_fn
 
-        self.game_stats = {player_id:GameStats(game_ctl.hparams, self.logger) for player_id in self.hparams.player_ids}
-
     @torch.no_grad()
     def run_simulations(self, initial_player_id: torch.Tensor, initial_game_state: torch.Tensor, invalid_actions_mask: torch.Tensor):
         start_simulation_time = perf_counter()
@@ -305,7 +303,9 @@ class Simulation:
         return actions, children_visit_counts, root_values, out
 
     @torch.no_grad()
-    def run_single_game(self, hparams: Hparams) -> Dict[int, GameStats]:
+    def run_single_game_and_collect_stats(self, hparams: Hparams) -> Dict[int, GameStats]:
+        game_stats = {player_id:GameStats(self.game_ctl.hparams, self.logger) for player_id in self.hparams.player_ids}
+
         game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.float32, device=hparams.device)
         player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.int64) * hparams.player_ids[0]
 
@@ -330,7 +330,7 @@ class Simulation:
             new_game_states, rewards, dones = self.game_ctl.step_games(self.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
             game_states[active_games_index] = new_game_states.detach().clone()
 
-            self.game_stats[player_id].append(active_games_index, {
+            game_stats[player_id].append(active_games_index, {
                 'children_visits': children_visits,
                 'initial_values': out_initial.value.squeeze(1),
                 'initial_policy_probs': F.softmax(out_initial.policy_logits, 1),
@@ -348,11 +348,11 @@ class Simulation:
 
             win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
             other_rewards = torch.ones_like(win_index).float() * -1
-            self.game_stats[other_player_id].update_last_reward_and_values(win_index, other_rewards)
+            game_stats[other_player_id].update_last_reward_and_values(win_index, other_rewards)
 
             lose_index = active_games_index[torch.logical_and((dones == True), (rewards < 0))]
             other_rewards = torch.ones_like(lose_index).float() * 1
-            self.game_stats[other_player_id].update_last_reward_and_values(lose_index, other_rewards)
+            game_stats[other_player_id].update_last_reward_and_values(lose_index, other_rewards)
 
             # max_debug = 10
             # train.logger.info(f'game:\n{game_states[0].detach().cpu().numpy().astype(int)}\n'
@@ -371,4 +371,4 @@ class Simulation:
             player_ids = mcts.player_id_change(hparams, player_ids)
             active_games_index = active_games_index[dones != True]
 
-        return self.game_stats
+        return game_stats
