@@ -26,6 +26,7 @@ def action_selection_fn(children_visit_counts: torch.Tensor, episode_len: torch.
     return actions_dist
 
 class Evaluation:
+    @torch.no_grad()
     def __init__(self, game_ctl: module_loader.GameModule, checkpoint_path: Optional[str], logger: logging.Logger, connectx_dnn_model_dir: str, random_agent: bool):
         self.game_ctl = game_ctl
         self.hparams = game_ctl.hparams
@@ -119,6 +120,7 @@ class Evaluation:
             'episode_len': episode_len.item(),
         }
 
+    @torch.no_grad()
     def run_evaluation(self):
         for player_id in self.hparams.player_ids:
             stat = self.one_game(player_id)
@@ -130,15 +132,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, help='Training batch size')
     parser.add_argument('--num_eval_simulations', type=int, default=400, help='Number of evaluation simulations')
-    parser.add_argument('--checkpoints_dir', type=str, required=True, help='Checkpoints directory')
+    parser.add_argument('--checkpoints_dir', type=str, help='Checkpoints directory')
     parser.add_argument('--checkpoint_path', type=str, help='Load this particular checkpoint')
     parser.add_argument('--connectx_dnn_model_dir', type=str, help='ConnectX DNN model dir')
     parser.add_argument('--random_agent', action='store_true', help='Use random agent instead')
+    parser.add_argument('--log_to_stdout', action='store_true', help='Whether to log messages to stdout')
+    parser.add_argument('--logfile', type=str, help='Logfile')
     parser.add_argument('--load_latest', action='store_true', default=False, help='Whether to load the latest checkpoint instead of the best metrics')
     FLAGS = parser.parse_args()
 
     if not FLAGS.random_agent and not FLAGS.connectx_dnn_model_dir:
-        print(f'You must provide either random agent flag or connectx dnn model dir')
+        print(f'Either random agent flag or connectx dnn model dir has to be provided')
+        exit(-1)
+
+    if not FLAGS.checkpoints_dir and not FLAGS.checkpoint_path:
+        print(f'Either checkpoints_dir or checkpoint_path has to be provided')
         exit(-1)
 
     module = module_loader.GameModule('connectx', load=True)
@@ -152,11 +160,9 @@ def main():
     else:
         module.hparams.device = torch.device('cpu')
     module.hparams.load_latest = FLAGS.load_latest
-    module.hparams.add_exploration_noise = False
+    #module.hparams.add_exploration_noise = False
 
-    logfile = os.path.join(module.hparams.checkpoints_dir, f'connectx_evaluation.log')
-    os.makedirs(module.hparams.checkpoints_dir, exist_ok=True)
-    logger = setup_logger('eval', logfile, module.hparams.log_to_stdout)
+    logger = setup_logger('eval', FLAGS.logfile, FLAGS.log_to_stdout)
 
     evaluation = Evaluation(module, FLAGS.checkpoint_path, logger, FLAGS.connectx_dnn_model_dir, FLAGS.random_agent)
     evaluation.run_evaluation()
