@@ -5,7 +5,8 @@ import os
 def find_checkpoint(checkpoints_dir: str, load_latest: bool) -> Optional[str]:
     if load_latest:
         checkpoint_path = os.path.join(checkpoints_dir, 'muzero_latest.ckpt')
-        return checkpoint_path
+        if os.path.exists(checkpoint_path):
+            return checkpoint_path
 
     max_score = None
     max_score_fn = None
