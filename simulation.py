@@ -245,22 +245,24 @@ class Simulation:
     def __init__(self,
                  game_ctl: module_loader.GameModule,
                  inference: Inference,
+                 action_selection_fn: Callable,
                  logger: logging.Logger,
                  summary_writer: SummaryWriter,
                  summary_prefix: str,
-                 action_selection_fn: Callable):
+                 summary_step: int,
+                 ):
         self.game_ctl = game_ctl
         self.hparams = game_ctl.hparams
         self.logger = logger
         self.inference = inference
         self.summary_writer = summary_writer
         self.summary_prefix = summary_prefix
-        self.summary_step = 0
+        self.summary_step = summary_step
 
         self.action_selection_fn = action_selection_fn
 
     @torch.no_grad()
-    def run_simulations(self, initial_player_id: torch.Tensor, initial_game_state: torch.Tensor, invalid_actions_mask: torch.Tensor):
+    def run_simulations(self, initial_player_id: torch.Tensor, initial_game_state: torch.Tensor, invalid_actions_mask: torch.Tensor, debug: bool):
         start_simulation_time = perf_counter()
 
         tree = mcts.Tree(self.hparams, initial_player_id, self.inference, self.logger)
@@ -277,11 +279,11 @@ class Simulation:
         tree.store_states(search_path, episode_len, out.hidden_state)
 
         tree.expand(node_index, out.policy_logits)
-        tree.visit_count.scatter_(1, node_index, 1)
-        tree.value_sum.scatter_(1, node_index, out.value)
+        tree.backpropagate(search_path, episode_len-1, out.value)
+
+        children_index = tree.children_index(batch_index, node_index)
 
         if self.hparams.add_exploration_noise:
-            children_index = tree.children_index(batch_index, node_index)
             tree.add_exploration_noise(children_index, self.hparams.exploration_fraction)
 
         for _ in range(self.hparams.num_simulations):
@@ -290,17 +292,67 @@ class Simulation:
         simulation_time = perf_counter() - start_simulation_time
         one_sim_ms = int(simulation_time / self.hparams.num_simulations * 1000)
 
-        children_index = tree.children_index(batch_index, node_index)
         children_visit_counts = tree.visit_count.gather(1, children_index).float()
         root_values = tree.value(batch_index, node_index).squeeze(1)
 
         actions = self.action_selection_fn(children_visit_counts, episode_len)
-        max_debug = 10
-        self.logger.info(f'children_index:\n{children_index[:max_debug]}\n'
-                         f'children_visit_counts:\n{children_visit_counts[:max_debug]}\n'
-                         f'root_values: {root_values.shape}\n{root_values[:max_debug]}\n'
-                         f'actions:\n{actions[:max_debug]}')
-        return actions, children_visit_counts, root_values, out
+
+        debug_info = {
+            'inference_out_initial': out,
+        }
+
+        if debug:
+            ucb_score, visits_score_norm, children_prior, prior_score, value_score = tree.ucb_scores(batch_index, node_index, children_index)
+            children_value = tree.value(batch_index, children_index)
+
+            debug_info.update({
+                'ucb_score': ucb_score.detach().clone(),
+                'visits_score_node': visits_score_norm.detach().clone(),
+                'children_prior': children_prior.detach().clone(),
+                'children_value': children_value.detach().clone(),
+                'prior_score': prior_score.detach().clone(),
+                'value_score': value_score.detach().clone(),
+            })
+
+            if self.summary_writer is not None:
+                children_prior_dict = {}
+                children_value_dict = {}
+                ucb_score_dict = {}
+                visits_score_dict = {}
+                prior_score_dict = {}
+                value_score_dict = {}
+                score_diff_dict = {}
+
+                for action in range(ucb_score.shape[1]):
+                    action_str = str(action)
+                    children_prior_dict[action_str] = children_prior[:, action].mean(0)
+                    children_value_dict[action_str] = children_value[:, action].mean(0)
+                    ucb_score_dict[action_str] = ucb_score[:, action].mean(0)
+                    visits_score_dict[action_str] = visits_score_norm[:, action].mean(0)
+                    prior_score_dict[action_str] = prior_score[:, action].mean(0)
+                    value_score_dict[action_str] = value_score[:, action].mean(0)
+                    score_diff_dict[action_str] = (prior_score[:, action] - value_score[:, action]).mean(0)
+
+                self.summary_writer.add_scalars(f'{self.summary_prefix}/children_prior', children_prior_dict, self.summary_step)
+                self.summary_writer.add_scalars(f'{self.summary_prefix}/children_value', children_value_dict, self.summary_step)
+                self.summary_writer.add_scalars(f'{self.summary_prefix}/ucb_score', ucb_score_dict, self.summary_step)
+                self.summary_writer.add_scalars(f'{self.summary_prefix}/visits_score', visits_score_dict, self.summary_step)
+                self.summary_writer.add_scalars(f'{self.summary_prefix}/prior_score', prior_score_dict, self.summary_step)
+                self.summary_writer.add_scalars(f'{self.summary_prefix}/value_score', value_score_dict, self.summary_step)
+                self.summary_writer.add_scalars(f'{self.summary_prefix}/score_diff', score_diff_dict, self.summary_step)
+
+            # max_debug = 10
+            # self.logger.info(f'children_index:\n{children_index[:max_debug]}\n'
+            #                  f'children_visit_counts:\n{children_visit_counts[:max_debug]}\n'
+            #                  f'visits_score_norm:\n{visits_score_norm[:max_debug]}\n'
+            #                  f'children_prior:\n{children_prior[:max_debug]}\n'
+            #                  f'prior_score:\n{prior_score[:max_debug]}\n'
+            #                  f'value_score:\n{value_score[:max_debug]}\n'
+            #                  f'ucb_score:\n{ucb_score[:max_debug]}\n'
+            #                  f'root_values: {root_values.shape}\n{root_values[:max_debug]}\n'
+            #                  f'actions: {actions.shape}\n{actions[:max_debug]}')
+
+        return actions, children_visit_counts, root_values, debug_info
 
     @torch.no_grad()
     def run_single_game_and_collect_stats(self, hparams: Hparams) -> Dict[int, GameStats]:
@@ -312,6 +364,7 @@ class Simulation:
         active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
         game_state_stacks = {player_id:GameState(hparams.batch_size, hparams, self.game_ctl.network_hparams) for player_id in hparams.player_ids}
 
+        debug = True
         while True:
             active_player_ids = player_ids[active_games_index].detach().clone()
 
@@ -326,9 +379,11 @@ class Simulation:
             game_state_stacks[player_id].push_game(player_ids, game_states)
             game_state_stack_converted = game_state_stacks[player_id].create_state()
 
-            actions, children_visits, root_values, out_initial = self.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask)
+            actions, children_visits, root_values, debug_info = self.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask, debug)
             new_game_states, rewards, dones = self.game_ctl.step_games(self.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
             game_states[active_games_index] = new_game_states.detach().clone()
+
+            out_initial = debug_info['inference_out_initial']
 
             game_stats[player_id].append(active_games_index, {
                 'children_visits': children_visits,
@@ -370,5 +425,6 @@ class Simulation:
 
             player_ids = mcts.player_id_change(hparams, player_ids)
             active_games_index = active_games_index[dones != True]
+            debug = False
 
         return game_stats
