@@ -209,10 +209,10 @@ class GameStats:
             discounted_rewards = discounted_rewards.sum(1)
             values += discounted_rewards
 
-            #target_values[:, unroll_step] = (values + self.root_values[:, unroll_step]) / 2
-            target_values[:, unroll_step] = values
-
             batch_index = torch.arange(len(start_index), device=start_index.device)
+            target_values[batch_index, unroll_step] = (values + self.root_values[batch_index, start_unroll_index]) / 2
+            #target_values[:, unroll_step] = values
+
             target_children_visits[batch_index, :, unroll_step] = self.children_visits[batch_index, :, start_unroll_index].float()
             player_ids[batch_index, unroll_step] = self.player_ids[batch_index, start_unroll_index].long()
 
@@ -304,7 +304,7 @@ class Train:
         #                  f'actions:\n{actions[:max_debug]}')
         return actions, children_visit_counts, root_values, out
 
-def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int, GameStats]:
+def run_single_game(hparams: Hparams, train: Train) -> Dict[int, GameStats]:
     game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.float32, device=hparams.device)
     player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.int64) * hparams.player_ids[0]
 
@@ -369,9 +369,5 @@ def run_single_game(hparams: Hparams, train: Train, num_steps: int) -> Dict[int,
 
         player_ids = mcts.player_id_change(hparams, player_ids)
         active_games_index = active_games_index[dones != True]
-
-        num_steps -= 1
-        if num_steps == 0:
-            break
 
     return train.game_stats
