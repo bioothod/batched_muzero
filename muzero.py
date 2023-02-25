@@ -404,7 +404,7 @@ class Trainer:
         hparams = deepcopy(self.hparams)
         hparams.batch_size = len(self.eval_ds.game_states)
 
-        sim = simulation.Simulation(self.game_ctl, self.inference, self.logger, self.summary_writer, 'eval', action_selection_fn)
+        sim = simulation.Simulation(self.game_ctl, self.inference, action_selection_fn, self.logger, self.summary_writer, 'eval', self.global_step)
         game_state_stack = networks.GameState(hparams.batch_size, hparams, self.game_ctl.network_hparams)
 
         active_game_states = self.eval_ds.game_states
@@ -414,7 +414,7 @@ class Trainer:
         game_state_stack.push_game(active_player_ids, active_game_states)
         game_states = game_state_stack.create_state()
 
-        pred_actions, children_visits, root_values, out_initial = sim.run_simulations(active_player_ids, game_states, invalid_actions_mask)
+        pred_actions, children_visits, root_values, debug_info = sim.run_simulations(active_player_ids, game_states, invalid_actions_mask, debug=False)
 
         best_score, good_score, total_best_score, total_good_score = self.eval_ds.evaluate(pred_actions)
 

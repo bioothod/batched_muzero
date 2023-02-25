@@ -71,6 +71,7 @@ class Evaluation:
         final_rewards = torch.zeros(self.hparams.batch_size, device=self.hparams.device, dtype=torch.float32)
         episode_len = torch.zeros(self.hparams.batch_size, device=self.hparams.device, dtype=torch.int64)
 
+        debug = True
         while True:
             active_player_ids = player_ids[active_games_index].detach().clone()
             active_game_states = game_states[active_games_index]
@@ -79,7 +80,9 @@ class Evaluation:
             game_state_stack.push_game(player_ids, game_states)
             game_state_stack_converted = game_state_stack.create_state()
 
-            actions, children_visits, root_values, out_initial = sim.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask)
+            actions, children_visits, root_values, out_initial = sim.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask, debug)
+            debug = False
+
             new_game_states, rewards, dones = self.game_ctl.step_games(self.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
             game_states[active_games_index] = new_game_states.detach().clone()
             final_rewards[active_games_index] = rewards.detach().clone()
