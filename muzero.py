@@ -404,18 +404,17 @@ class Trainer:
         hparams = deepcopy(self.hparams)
         hparams.batch_size = len(self.eval_ds.game_states)
 
-        train = simulation.Train(self.game_ctl, self.inference, self.logger, self.summary_writer, 'eval', action_selection_fn)
-        game_state_stack = networks.GameState(hparams.batch_size, hparams, train.game_ctl.network_hparams)
+        sim = simulation.Simulation(self.game_ctl, self.inference, self.logger, self.summary_writer, 'eval', action_selection_fn)
+        game_state_stack = networks.GameState(hparams.batch_size, hparams, self.game_ctl.network_hparams)
 
-        with torch.no_grad():
-            active_game_states = self.eval_ds.game_states
-            active_player_ids = self.eval_ds.game_player_ids
-            invalid_actions_mask = train.game_ctl.invalid_actions_mask(train.game_ctl.game_hparams, active_game_states)
+        active_game_states = self.eval_ds.game_states
+        active_player_ids = self.eval_ds.game_player_ids
+        invalid_actions_mask = self.game_ctl.invalid_actions_mask(self.game_ctl.game_hparams, active_game_states)
 
-            game_state_stack.push_game(active_player_ids, active_game_states)
-            game_states = game_state_stack.create_state()
+        game_state_stack.push_game(active_player_ids, active_game_states)
+        game_states = game_state_stack.create_state()
 
-            pred_actions, children_visits, root_values, out_initial = train.run_simulations(active_player_ids, game_states, invalid_actions_mask)
+        pred_actions, children_visits, root_values, out_initial = sim.run_simulations(active_player_ids, game_states, invalid_actions_mask)
 
         best_score, good_score, total_best_score, total_good_score = self.eval_ds.evaluate(pred_actions)
 

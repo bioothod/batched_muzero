@@ -124,8 +124,8 @@ class MuzeroCollectionClient:
 
         self.inference.train(False)
 
-        train = simulation.Train(self.game_ctl, self.inference, self.logger, self.summary_writer, f'simulation/{self.client_id}', self.action_selection_fn)
-        game_stats = simulation.run_single_game(self.game_ctl.hparams, train)
+        sim = simulation.Simulation(self.game_ctl, self.inference, self.logger, self.summary_writer, f'simulation/{self.client_id}', self.action_selection_fn)
+        game_stats = sim.run_single_game(self.game_ctl.hparams)
 
         collection_time = perf_counter() - start_time
 

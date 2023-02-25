@@ -56,7 +56,7 @@ class Evaluation:
             self.connectx_dnn = connectx_dnn_agent.CombinedModel(connectx_dnn_model_dir).to(self.hparams.device)
 
     def one_game(self, player_id: int):
-        train = simulation.Train(self.game_ctl, self.inference, self.logger, None, '', action_selection_fn)
+        sim = simulation.Simulation(self.game_ctl, self.inference, self.logger, None, '', action_selection_fn)
 
         game_states = torch.zeros(self.hparams.batch_size, *self.hparams.state_shape, dtype=torch.float32, device=self.hparams.device)
         player_ids = torch.ones(self.hparams.batch_size, device=self.hparams.device, dtype=torch.int64) * player_id
@@ -66,7 +66,7 @@ class Evaluation:
             cx_player_id = self.hparams.player_ids[0]
 
         active_games_index = torch.arange(self.hparams.batch_size).long().to(self.hparams.device)
-        game_state_stack = networks.GameState(self.hparams.batch_size, self.hparams, train.game_ctl.network_hparams)
+        game_state_stack = networks.GameState(self.hparams.batch_size, self.hparams, self.game_ctl.network_hparams)
 
         final_rewards = torch.zeros(self.hparams.batch_size, device=self.hparams.device, dtype=torch.float32)
         episode_len = torch.zeros(self.hparams.batch_size, device=self.hparams.device, dtype=torch.int64)
@@ -74,13 +74,13 @@ class Evaluation:
         while True:
             active_player_ids = player_ids[active_games_index].detach().clone()
             active_game_states = game_states[active_games_index]
-            invalid_actions_mask = train.game_ctl.invalid_actions_mask(train.game_ctl.game_hparams, active_game_states)
+            invalid_actions_mask = self.game_ctl.invalid_actions_mask(self.game_ctl.game_hparams, active_game_states)
 
             game_state_stack.push_game(player_ids, game_states)
             game_state_stack_converted = game_state_stack.create_state()
 
-            actions, children_visits, root_values, out_initial = train.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask)
-            new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
+            actions, children_visits, root_values, out_initial = sim.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask)
+            new_game_states, rewards, dones = self.game_ctl.step_games(self.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
             game_states[active_games_index] = new_game_states.detach().clone()
             final_rewards[active_games_index] = rewards.detach().clone()
             episode_len[active_games_index] += 1
@@ -99,7 +99,7 @@ class Evaluation:
                 cx_actions = torch.argmax(cx_probs, 1)
 
             cx_player_ids = torch.ones(len(cx_actions), device=self.hparams.device) * cx_player_id
-            new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, cx_player_ids, cx_actions)
+            new_game_states, rewards, dones = self.game_ctl.step_games(self.game_ctl.game_hparams, active_game_states, cx_player_ids, cx_actions)
             game_states[active_games_index] = new_game_states.detach().clone()
 
             done_index = active_games_index[torch.logical_and((dones == True), (rewards < 0))]

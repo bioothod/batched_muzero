@@ -240,7 +240,8 @@ class GameStats:
         return samples
 
 
-class Train:
+class Simulation:
+    @torch.no_grad()
     def __init__(self,
                  game_ctl: module_loader.GameModule,
                  inference: Inference,
@@ -260,6 +261,7 @@ class Train:
 
         self.game_stats = {player_id:GameStats(game_ctl.hparams, self.logger) for player_id in self.hparams.player_ids}
 
+    @torch.no_grad()
     def run_simulations(self, initial_player_id: torch.Tensor, initial_game_state: torch.Tensor, invalid_actions_mask: torch.Tensor):
         start_simulation_time = perf_counter()
 
@@ -295,79 +297,78 @@ class Train:
         root_values = tree.value(batch_index, node_index).squeeze(1)
 
         actions = self.action_selection_fn(children_visit_counts, episode_len)
-        # max_debug = 10
-        # self.logger.info(f'children_index:\n{children_index[:max_debug]}\n'
-        #                  f'children_visit_counts:\n{children_visit_counts[:max_debug]}\n'
-        #                  f'children_sum_visits:\n{children_sum_visits[:max_debug]}\n'
-        #                  f'children_visits:\n{children_visits[:max_debug]}\n'
-        #                  f'root_values: {root_values.shape}\n{root_values[:max_debug]}\n'
-        #                  f'actions:\n{actions[:max_debug]}')
+        max_debug = 10
+        self.logger.info(f'children_index:\n{children_index[:max_debug]}\n'
+                         f'children_visit_counts:\n{children_visit_counts[:max_debug]}\n'
+                         f'root_values: {root_values.shape}\n{root_values[:max_debug]}\n'
+                         f'actions:\n{actions[:max_debug]}')
         return actions, children_visit_counts, root_values, out
 
-def run_single_game(hparams: Hparams, train: Train) -> Dict[int, GameStats]:
-    game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.float32, device=hparams.device)
-    player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.int64) * hparams.player_ids[0]
+    @torch.no_grad()
+    def run_single_game(self, hparams: Hparams) -> Dict[int, GameStats]:
+        game_states = torch.zeros(hparams.batch_size, *hparams.state_shape, dtype=torch.float32, device=hparams.device)
+        player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.int64) * hparams.player_ids[0]
 
-    active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
-    game_state_stacks = {player_id:GameState(hparams.batch_size, hparams, train.game_ctl.network_hparams) for player_id in hparams.player_ids}
+        active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
+        game_state_stacks = {player_id:GameState(hparams.batch_size, hparams, self.game_ctl.network_hparams) for player_id in hparams.player_ids}
 
-    while True:
-        active_player_ids = player_ids[active_games_index].detach().clone()
+        while True:
+            active_player_ids = player_ids[active_games_index].detach().clone()
 
-        # we do not care if it will be modified in place, we will make a copy when pushing this state into the stack of states
-        active_game_states = game_states[active_games_index]
-        invalid_actions_mask = train.game_ctl.invalid_actions_mask(train.game_ctl.game_hparams, active_game_states)
+            # we do not care if it will be modified in place, we will make a copy when pushing this state into the stack of states
+            active_game_states = game_states[active_games_index]
+            invalid_actions_mask = self.game_ctl.invalid_actions_mask(self.game_ctl.game_hparams, active_game_states)
 
-        player_id = active_player_ids[0].item()
-        if torch.any(player_id != player_ids):
-            raise ValueError(f'pushing non-consistent player_ids: player_id: {player_id}, not_equal: {(player_id != player_ids).sum()}/{len(player_ids)}')
+            player_id = active_player_ids[0].item()
+            if torch.any(player_id != player_ids):
+                raise ValueError(f'pushing non-consistent player_ids: player_id: {player_id}, not_equal: {(player_id != player_ids).sum()}/{len(player_ids)}')
 
-        game_state_stacks[player_id].push_game(player_ids, game_states)
-        game_state_stack_converted = game_state_stacks[player_id].create_state()
+            game_state_stacks[player_id].push_game(player_ids, game_states)
+            game_state_stack_converted = game_state_stacks[player_id].create_state()
 
-        actions, children_visits, root_values, out_initial = train.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask)
-        new_game_states, rewards, dones = train.game_ctl.step_games(train.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
-        game_states[active_games_index] = new_game_states.detach().clone()
+            actions, children_visits, root_values, out_initial = self.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask)
+            new_game_states, rewards, dones = self.game_ctl.step_games(self.game_ctl.game_hparams, active_game_states, active_player_ids, actions)
+            game_states[active_games_index] = new_game_states.detach().clone()
 
-        train.game_stats[player_id].append(active_games_index, {
-            'children_visits': children_visits,
-            'initial_values': out_initial.value.squeeze(1),
-            'initial_policy_probs': F.softmax(out_initial.policy_logits, 1),
-            'root_values': root_values,
-            'rewards': rewards,
-            'actions': actions,
-            'dones': dones,
-            'player_ids': active_player_ids,
+            self.game_stats[player_id].append(active_games_index, {
+                'children_visits': children_visits,
+                'initial_values': out_initial.value.squeeze(1),
+                'initial_policy_probs': F.softmax(out_initial.policy_logits, 1),
+                'root_values': root_values,
+                'rewards': rewards,
+                'actions': actions,
+                'dones': dones,
+                'player_ids': active_player_ids,
 
-            # needs to save the whole tensor of batch_size size, because we use a list of those, not copying them into a single tensor like other fields here
-            'game_states': game_state_stack_converted,
-        })
+                # needs to save the whole tensor of batch_size size, because we use a list of those, not copying them into a single tensor like other fields here
+                'game_states': game_state_stack_converted,
+            })
 
-        other_player_id = mcts.player_id_change(hparams, torch.tensor(player_id)).item()
+            other_player_id = mcts.player_id_change(hparams, torch.tensor(player_id)).item()
 
-        win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
-        other_rewards = torch.ones_like(win_index).float() * -1
-        train.game_stats[other_player_id].update_last_reward_and_values(win_index, other_rewards)
+            win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
+            other_rewards = torch.ones_like(win_index).float() * -1
+            self.game_stats[other_player_id].update_last_reward_and_values(win_index, other_rewards)
 
-        lose_index = active_games_index[torch.logical_and((dones == True), (rewards < 0))]
-        other_rewards = torch.ones_like(lose_index).float() * 1
-        train.game_stats[other_player_id].update_last_reward_and_values(lose_index, other_rewards)
+            lose_index = active_games_index[torch.logical_and((dones == True), (rewards < 0))]
+            other_rewards = torch.ones_like(lose_index).float() * 1
+            self.game_stats[other_player_id].update_last_reward_and_values(lose_index, other_rewards)
 
-        # max_debug = 10
-        # train.logger.info(f'game:\n{game_states[0].detach().cpu().numpy().astype(int)}\n'
-        #                   f'actions:\n{actions[:max_debug]}\n'
-        #                   f'children_visits:\n{children_visits[:max_debug]}\n'
-        #                   f'root_values:\n{root_values[:max_debug]}\n'
-        #                   f'rewards:\n{rewards[:max_debug]}\n'
-        #                   f'dones:\n{dones[:max_debug]}\n'
-        #                   f'player_ids:\n{player_ids[:max_debug]}\n'
-        #                   f'active_game_index:\n{active_games_index[:max_debug]}'
-        #                   )
+            # max_debug = 10
+            # train.logger.info(f'game:\n{game_states[0].detach().cpu().numpy().astype(int)}\n'
+            #                   f'actions:\n{actions[:max_debug]}\n'
+            #                   f'children_visits:\n{children_visits[:max_debug]}\n'
+            #                   f'root_values:\n{root_values[:max_debug]}\n'
+            #                   f'rewards:\n{rewards[:max_debug]}\n'
+            #                   f'dones:\n{dones[:max_debug]}\n'
+            #                   f'player_ids:\n{player_ids[:max_debug]}\n'
+            #                   f'active_game_index:\n{active_games_index[:max_debug]}'
+            #                   )
 
-        if dones.sum() == len(dones):
-            break
+            if dones.sum() == len(dones):
+                break
 
-        player_ids = mcts.player_id_change(hparams, player_ids)
-        active_games_index = active_games_index[dones != True]
+            player_ids = mcts.player_id_change(hparams, player_ids)
+            active_games_index = active_games_index[dones != True]
 
-    return train.game_stats
+        return self.game_stats
