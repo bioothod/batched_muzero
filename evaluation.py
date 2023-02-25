@@ -1,13 +1,9 @@
 from typing import Dict, List, Optional
 
 import argparse
-import itertools
 import logging
 import os
-import time
-
-from collections import defaultdict
-from time import perf_counter
+import random
 
 import numpy as np
 import torch
@@ -34,6 +30,11 @@ class Evaluation:
         self.game_ctl = game_ctl
         self.hparams = game_ctl.hparams
         self.logger = logger
+
+        seed = 42
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
 
         self.inference = networks.Inference(self.game_ctl, logger)
 
@@ -151,6 +152,7 @@ def main():
     else:
         module.hparams.device = torch.device('cpu')
     module.hparams.load_latest = FLAGS.load_latest
+    module.hparams.add_exploration_noise = False
 
     logfile = os.path.join(module.hparams.checkpoints_dir, f'connectx_evaluation.log')
     os.makedirs(module.hparams.checkpoints_dir, exist_ok=True)
