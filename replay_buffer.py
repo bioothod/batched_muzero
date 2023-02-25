@@ -65,9 +65,9 @@ class ReplayBuffer:
         if len(all_games) == 0:
             all_games = self.flatten_games()
 
-        samples = []
+        samples = set()
         num_iterations = 0
-        while len(samples) < batch_size and num_iterations < 200:
+        while len(samples) < batch_size and num_iterations < 1024:
             game_stat = random.choice(all_games)
             random_index = random.sample(range(len(game_stat.episode_len)), 64)
             game_stat = game_stat.index(random_index)
@@ -83,7 +83,8 @@ class ReplayBuffer:
             start_pos = torch.maximum(start_pos, torch.zeros_like(start_pos))
 
             elms = game_stat.make_target(start_pos)
-            samples += elms
+            #samples += elms
+            samples.update(elms)
             num_iterations += 1
 
         return list(samples)
