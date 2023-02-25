@@ -180,7 +180,7 @@ class Tree:
 
         children_index = self.children_index(batch_index, node_index)
 
-        ucb_scores = self.ucb_scores(batch_index, node_index, children_index)
+        ucb_scores, _, _, _, _ = self.ucb_scores(batch_index, node_index, children_index)
         # if depth_index < 20:
         #     self.logger.info(f'depth: {depth_index}, select_children: ucb_scores:\n{ucb_scores[:max_debug]}')
         ucb_scores[invalid_actions_mask] = float('-inf')
@@ -234,12 +234,12 @@ class Tree:
         #                  f'reward:\n{self.reward[batch_index].gather(1, children_index)[:max_debug]}\n'
         #                  f'value_score:\n{value_score[:max_debug]}\n'
         #                  f'score:\n{score[:max_debug]}')
-        return score
+        return score, visits_score_norm, children_prior, prior_score, value_score
 
     def backpropagate(self, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
         batch_index = torch.arange(len(search_path)).to(search_path.device)
         zeros_value = torch.zeros_like(value)
-        for current_episode_len in torch.arange(episode_len.max(), 0, step=-1).to(self.hparams.device):
+        for current_episode_len in torch.arange(episode_len.max(), -1, step=-1).to(self.hparams.device):
             node_index = search_path[:, current_episode_len].unsqueeze(1)
 
             valid_episode_len_index = current_episode_len <= episode_len
@@ -264,10 +264,6 @@ class Tree:
 
             value = self.reward.gather(1, node_index) + self.hparams.value_discount * value
             #self.min_max_stats.update(self.value(batch_index[valid_episode_len_index], node_index[valid_episode_len_index]))
-
-        zeros_index = torch.zeros(len(episode_len), 1, dtype=torch.int64, device=self.value_sum.device)
-        self.value_sum.scatter_add_(1, zeros_index, value)
-        self.visit_count.scatter_add_(1, zeros_index, torch.ones_like(zeros_index))
 
     def _store_states(self, search_path: torch.Tensor, episode_len: torch.Tensor, hidden_states: torch.Tensor):
         pass
