@@ -160,7 +160,7 @@ def main():
     else:
         module.hparams.device = torch.device('cpu')
     module.hparams.load_latest = FLAGS.load_latest
-    #module.hparams.add_exploration_noise = False
+    module.hparams.add_exploration_noise = False
 
     logger = setup_logger('eval', FLAGS.logfile, FLAGS.log_to_stdout)
 
