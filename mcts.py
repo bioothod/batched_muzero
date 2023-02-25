@@ -238,12 +238,12 @@ class Tree:
 
     def backpropagate(self, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
         batch_index = torch.arange(len(search_path)).to(search_path.device)
+        zeros_value = torch.zeros_like(value)
         for current_episode_len in torch.arange(episode_len.max(), 0, step=-1).to(self.hparams.device):
-            node_index = search_path[:, current_episode_len]
-            node_index = node_index.unsqueeze(1)
+            node_index = search_path[:, current_episode_len].unsqueeze(1)
 
             valid_episode_len_index = current_episode_len <= episode_len
-            current_value = torch.where(valid_episode_len_index.unsqueeze(1), value, torch.zeros_like(value))
+            current_value = torch.where(valid_episode_len_index.unsqueeze(1), value, zeros_value)
 
             # debug_max = 10
             # self.logger.info(f'backpropagate: '
@@ -273,7 +273,7 @@ class Tree:
         pass
 
     def _load_states(self, search_path: torch.Tensor, episode_len: torch.Tensor) -> torch.Tensor:
-        hidden_states = torch.zeros(self.hparams.batch_size, 12, *self.hparams.state_shape).to(self.hparams.device)
+        hidden_states = torch.zeros(self.hparams.batch_size, 64, *self.hparams.state_shape).to(self.hparams.device)
         return hidden_states
 
     def store_states(self, search_path: torch.Tensor, episode_len: torch.Tensor, hidden_states: torch.Tensor):
