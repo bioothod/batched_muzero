@@ -124,7 +124,7 @@ class MuzeroCollectionClient:
             self.inference.train(False)
 
             train = simulation.Train(self.game_ctl, self.inference, self.logger, self.summary_writer, f'simulation/{self.client_id}', self.action_selection_fn)
-            game_stats = simulation.run_single_game(self.game_ctl.hparams, train, num_steps=-1)
+            game_stats = simulation.run_single_game(self.game_ctl.hparams, train)
 
             collection_time = perf_counter() - start_time
 
@@ -137,7 +137,7 @@ class MuzeroCollectionClient:
 
                     prefix = f'{self.client_id}_{player_id}'
 
-                    for i in [0, 1, 2, 4]:
+                    for i in range(0, 16, 2):
                         valid_index = game_stat.episode_len > i
 
                         if valid_index.sum() > 0:
@@ -145,10 +145,10 @@ class MuzeroCollectionClient:
                             children_visits = children_visits / children_visits.sum(1, keepdim=True)
                             actions = range(children_visits.shape[-1])
                             children_visits = {str(action):children_visits[:, action].mean(0) for action in actions}
-                            initial_policy_probs = {str(action):game_stat.initial_policy_probs[valid_index, action, i].mean(0) for action in actions}
+                            #initial_policy_probs = {str(action):game_stat.initial_policy_probs[valid_index, action, i].mean(0) for action in actions}
 
                             self.summary_writer.add_scalars(f'{prefix}/children_visits{i}', children_visits, self.generation)
-                            self.summary_writer.add_scalars(f'{prefix}/pred_policy_probs{i}', initial_policy_probs, self.generation)
+                            #self.summary_writer.add_scalars(f'{prefix}/pred_policy_probs{i}', initial_policy_probs, self.generation)
 
                     self.summary_writer.add_scalars(f'{prefix}/root_values', {
                         'mcts': game_stat.root_values[:, 0].float().mean(),
