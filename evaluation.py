@@ -56,7 +56,7 @@ class Evaluation:
             self.connectx_dnn = connectx_dnn_agent.CombinedModel(connectx_dnn_model_dir).to(self.hparams.device)
 
     def one_game(self, player_id: int):
-        sim = simulation.Simulation(self.game_ctl, self.inference, self.logger, None, '', action_selection_fn)
+        sim = simulation.Simulation(self.game_ctl, self.inference, action_selection_fn, self.logger, None, '', 0)
 
         game_states = torch.zeros(self.hparams.batch_size, *self.hparams.state_shape, dtype=torch.float32, device=self.hparams.device)
         player_ids = torch.ones(self.hparams.batch_size, device=self.hparams.device, dtype=torch.int64) * player_id
