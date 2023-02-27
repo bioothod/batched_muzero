@@ -20,9 +20,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-
-from matplotlib.lines import Line2D
-
 torch.backends.cuda.matmul.allow_tf32 = True
 
 import checkpoints
@@ -207,51 +204,6 @@ class Trainer:
 
         return total_loss_mean
 
-    def plot_grad_flow(self, model):
-        '''Plots the gradients flowing through different layers in the net during training.
-        Can be used for checking for possible gradient vanishing / exploding problems.
-
-        Usage: Plug this function in Trainer class after loss.backwards() as
-        "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
-
-        ave_grads = []
-        max_grads= []
-        layers = []
-        for n, p in model.named_parameters:
-            if(p.requires_grad) and ("bias" not in n):
-                layers.append(n)
-                ave_grads.append(p.grad.abs().mean())
-                max_grads.append(p.grad.abs().max())
-        plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
-        plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
-        plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
-        plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
-        plt.xlim(left=0, right=len(ave_grads))
-        plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
-        plt.xlabel("Layers")
-        plt.ylabel("average gradient")
-        plt.title("Gradient flow")
-        plt.grid(True)
-        plt.legend([Line2D([0], [0], color="c", lw=4),
-                    Line2D([0], [0], color="b", lw=4),
-                    Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
-
-
-    def plot_grad_tensorboard(self, model):
-        #... your learning loop
-        _limits = np.array([float(i) for i in range(len(gradmean))])
-        _num = len(gradmean)
-        writer.add_histogram_raw(tag=netname+"/abs_mean", min=0.0, max=0.3, num=_num,
-                                 sum=gradmean.sum(), sum_squares=np.power(gradmean, 2).sum(), bucket_limits=_limits,
-                                 bucket_counts=gradmean, global_step=self.global_step)
-        # where gradmean is np.abs(p.grad.clone().detach().cpu().numpy()).mean()
-        # _limits is the x axis, the layers
-        # and
-        _mean = {}
-        for i, name in enumerate(layers):
-            _mean[name] = gradmean[i]
-        self.writer.add_scalars(netname+"/abs_mean", _mean, global_step=self.global_step)
-
     def run_training_online(self):
         self.replay_buffer.truncate(max_generation=self.global_step)
         while self.replay_buffer.num_games() < 10:
@@ -271,12 +223,16 @@ class Trainer:
 
             total_losses = []
             total_batch_size = 0
+            sample_start = []
+            sample_len = []
             for _ in range(self.hparams.num_gradient_accumulation_steps):
-                sample = self.replay_buffer.sample(batch_size=self.hparams.batch_size, all_games=all_games)[:self.hparams.batch_size]
-                random.shuffle(sample)
-                sample = train_element_collate_fn(sample)
-                sample = sample.to(self.hparams.device)
-                total_batch_size += len(sample)
+                with torch.no_grad():
+                    sample = self.replay_buffer.sample(batch_size=self.hparams.batch_size, all_games=all_games)[:self.hparams.batch_size]
+                    sample = train_element_collate_fn(sample)
+                    sample = sample.to(self.hparams.device)
+                    total_batch_size += len(sample)
+                    sample_start.append(sample.start_index)
+                    sample_len.append(sample.sample_len)
 
                 total_loss = self.training_step(sample)
                 total_loss.backward()
@@ -284,10 +240,12 @@ class Trainer:
                 total_losses.append(total_loss.item())
 
             total_loss_mean = sum(total_losses) / len(total_losses)
+            sample_start = torch.cat(sample_start, 0)
+            sample_len = torch.cat(sample_len, 0)
 
-            nn.utils.clip_grad_norm_(self.inference.representation.parameters(), 1)
-            nn.utils.clip_grad_norm_(self.inference.prediction.parameters(), 1)
-            nn.utils.clip_grad_norm_(self.inference.dynamic.parameters(), 1)
+            # nn.utils.clip_grad_norm_(self.inference.representation.parameters(), 1)
+            # nn.utils.clip_grad_norm_(self.inference.prediction.parameters(), 1)
+            # nn.utils.clip_grad_norm_(self.inference.dynamic.parameters(), 1)
 
             self.opt.step()
 
@@ -295,6 +253,17 @@ class Trainer:
 
             self.summary_writer.add_scalar('train/one_step_time', train_step_time, self.global_step)
             self.summary_writer.add_scalar('train/batch_size', total_batch_size, self.global_step)
+
+            self.summary_writer.add_scalars('train/start_index', {
+                'mean': sample_start.float().mean(),
+                'min': sample_start.min(),
+                'max': sample_start.max(),
+            }, self.global_step)
+            self.summary_writer.add_scalars('train/sample_len', {
+                'mean': sample_len.float().mean(),
+                'min': sample_len.min(),
+                'max': sample_len.max(),
+            }, self.global_step)
 
             self.summary_writer.add_scalar('train/total_loss', total_loss_mean, self.global_step)
             self.summary_writer.add_scalars('train/num_games', {
