@@ -37,9 +37,12 @@ class MCTSInference:
         return NetworkOutput(reward=reward, hidden_state=new_hidden_states, policy_logits=policy_logits, value=value)
 
 class MinMaxStats:
-    def __init__(self):
+    def __init__(self, bounds=[]):
         self.maximum = -float("inf")
         self.minimum = float("inf")
+
+        if len(bounds) == 2:
+            self.minimum, self.maximum = bounds
 
     def update(self, value: torch.Tensor):
         self.maximum = max(self.maximum, value.max())
@@ -89,7 +92,7 @@ class Tree:
         self.inference = inference
         self.logger = logger
 
-        self.min_max_stats = MinMaxStats()
+        self.min_max_stats = MinMaxStats([-1, 1])
         self.simulation_index = 0
 
 
@@ -162,7 +165,7 @@ class Tree:
         #                  f'visit_count:\n{visit_count[:debug_max]}\n'
         #                  f'value_sum:\n{value_sum[:debug_max]}\n'
         #                  f'value:\n{value[:debug_max]}')
-        #return self.min_max_stats.normalize(value)
+        value = self.min_max_stats.normalize(value)
         return value
 
     def add_exploration_noise(self, children_index: torch.Tensor, exploration_fraction: float):
@@ -219,7 +222,7 @@ class Tree:
         children_value = self.value(batch_index, children_index)
 
         value_score = self.reward[batch_index].gather(1, children_index) + self.hparams.value_discount * children_value
-        #value_score = self.min_max_stats.normalize(value_score)
+        value_score = self.min_max_stats.normalize(value_score)
         score = prior_score + value_score
 
         # max_debug = 10
@@ -236,14 +239,16 @@ class Tree:
         #                  f'score:\n{score[:max_debug]}')
         return score, visits_score_norm, children_prior, prior_score, value_score
 
-    def backpropagate(self, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
+    def backpropagate(self, game_player_id: torch.Tensor, player_ids: torch.Tensor, search_path: torch.Tensor, episode_len: torch.Tensor, value: torch.Tensor):
         batch_index = torch.arange(len(search_path)).to(search_path.device)
         zeros_value = torch.zeros_like(value)
-        for current_episode_len in torch.arange(episode_len.max(), -1, step=-1).to(self.hparams.device):
+        for current_episode_len in torch.arange(episode_len.max(), 0, step=-1).to(self.hparams.device):
             node_index = search_path[:, current_episode_len].unsqueeze(1)
 
             valid_episode_len_index = current_episode_len <= episode_len
-            current_value = torch.where(valid_episode_len_index.unsqueeze(1), value, zeros_value)
+
+            node_multiplier = torch.where(game_player_id == player_ids[:, current_episode_len-1], 1, -1)
+            current_value = torch.where(valid_episode_len_index.unsqueeze(1), value*node_multiplier, zeros_value)
 
             # debug_max = 10
             # self.logger.info(f'backpropagate: '
@@ -263,7 +268,11 @@ class Tree:
             self.visit_count.scatter_add_(1, node_index, visit_count)
 
             value = self.reward.gather(1, node_index) + self.hparams.value_discount * value
-            #self.min_max_stats.update(self.value(batch_index[valid_episode_len_index], node_index[valid_episode_len_index]))
+            self.min_max_stats.update(self.value(batch_index[valid_episode_len_index], node_index[valid_episode_len_index]))
+
+        root_index = torch.zeros_like(batch_index).unsqueeze(1)
+        self.value_sum.scatter_add_(1, root_index, value)
+        self.visit_count.scatter_add_(1, root_index, torch.ones_like(root_index))
 
     def _store_states(self, search_path: torch.Tensor, episode_len: torch.Tensor, hidden_states: torch.Tensor):
         pass
@@ -298,9 +307,10 @@ class Tree:
         hidden_states = torch.stack(hidden_states, 0).to(self.hparams.device)
         return hidden_states
 
-    def run_one_simulation(self, invalid_root_actions_mask: torch.Tensor):
+    def run_one_simulation(self, initial_player_id: torch.Tensor, invalid_root_actions_mask: torch.Tensor):
         search_path = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len+1).long().to(self.hparams.device)
         actions = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
+        player_ids = torch.zeros(self.hparams.batch_size, self.hparams.max_episode_len).long().to(self.hparams.device)
         episode_len = torch.zeros(self.hparams.batch_size, dtype=torch.int64, device=self.hparams.device)
         max_debug = 10
 
@@ -308,6 +318,7 @@ class Tree:
         node_index = torch.zeros(self.hparams.batch_size, 1).long().to(self.hparams.device)
 
         search_path[:, 0] = node_index.squeeze(1)
+        current_player_id = initial_player_id.detach().clone()
 
         for depth_index in range(0, self.hparams.max_episode_len):
             action_index, children_index = self.select_children(batch_index, node_index, invalid_root_actions_mask[batch_index])
@@ -324,15 +335,18 @@ class Tree:
             search_path[batch_index, depth_index+1] = children_index.squeeze(1).detach().clone()
             actions[batch_index, depth_index] = action_index.detach().clone()
             episode_len[batch_index] += 1
+            player_ids[batch_index, depth_index] = current_player_id[batch_index].detach().clone()
 
 
             expanded_index = self.expanded[batch_index].gather(1, children_index).squeeze(1) == True
             node_index = children_index[expanded_index]
             batch_index = batch_index[expanded_index]
+            current_player_id = player_id_change(self.hparams, current_player_id)
 
             #self.logger.info(f'depth: {depth_index}, node_index: {node_index.shape}\nnode_index: {node_index[:max_debug]}\nplayer_id: {player_id[batch_index][:max_debug, :episode_len.max()]}')
             if len(node_index) == 0:
                 break
+
 
         try:
             episode_len = episode_len.long()
@@ -359,7 +373,7 @@ class Tree:
             self.reward.scatter_(1, last_children_index, out.reward)
 
             self.expand(last_children_index, out.policy_logits)
-            self.backpropagate(search_path, episode_len, out.value)
+            self.backpropagate(initial_player_id, player_ids, search_path, episode_len, out.value)
         except:
             # self.logger.error(f'search_path: {search_path.shape}\n{search_path[:max_debug, :episode_len.max()+1]}')
             # self.logger.error(f'actions: {actions.shape}\n{actions[:max_debug, :episode_len.max()]}')

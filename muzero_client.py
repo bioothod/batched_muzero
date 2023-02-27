@@ -102,9 +102,8 @@ class MuzeroCollectionClient:
         self.inference.prediction.load_state_dict(convert(checkpoint['prediction_state_dict'], self.game_ctl.hparams.device))
         self.inference.dynamic.load_state_dict(convert(checkpoint['dynamic_state_dict'], self.game_ctl.hparams.device))
 
-    def send_game_stats(self, game_stats: Dict[int, simulation.GameStats], collection_time: float):
-        game_stats_list = [game_stat.to('cpu') for game_stat in game_stats.values()]
-        meta = pickle.dumps(game_stats_list)
+    def send_game_stats(self, game_stats: simulation.GameStats, collection_time: float):
+        meta = pickle.dumps([game_stats.to('cpu')])
 
         resp = self.stub.SendGameStats(muzero_pb2.GameStats(
             generation=self.generation,
@@ -134,39 +133,43 @@ class MuzeroCollectionClient:
             time.sleep(1)
 
         if self.write_summary and self.summary_writer is not None:
-            for player_id, game_stat in game_stats.items():
+            prefix = f'{self.client_id}'
 
-                prefix = f'{self.client_id}_{player_id}'
+            for i in range(0, 8, 1):
+                valid_index = game_stats.episode_len > i
 
-                for i in range(0, 16, 2):
-                    valid_index = game_stat.episode_len > i
+                if valid_index.sum() > 0:
+                    children_visits = game_stats.children_visits[valid_index, :, i].float()
+                    children_visits = children_visits / children_visits.sum(1, keepdim=True)
+                    actions = range(children_visits.shape[-1])
+                    children_visits = {str(action):children_visits[:, action].mean(0) for action in actions}
+                    #initial_policy_probs = {str(action):game_stat.initial_policy_probs[valid_index, action, i].mean(0) for action in actions}
 
-                    if valid_index.sum() > 0:
-                        children_visits = game_stat.children_visits[valid_index, :, i].float()
-                        children_visits = children_visits / children_visits.sum(1, keepdim=True)
-                        actions = range(children_visits.shape[-1])
-                        children_visits = {str(action):children_visits[:, action].mean(0) for action in actions}
-                        #initial_policy_probs = {str(action):game_stat.initial_policy_probs[valid_index, action, i].mean(0) for action in actions}
+                    self.summary_writer.add_scalars(f'{prefix}/children_visits{i}', children_visits, self.generation)
+                    #self.summary_writer.add_scalars(f'{prefix}/pred_policy_probs{i}', initial_policy_probs, self.generation)
 
-                        self.summary_writer.add_scalars(f'{prefix}/children_visits{i}', children_visits, self.generation)
-                        #self.summary_writer.add_scalars(f'{prefix}/pred_policy_probs{i}', initial_policy_probs, self.generation)
+            self.summary_writer.add_scalars(f'{prefix}/root_values', {
+                'mcts1': game_stats.root_values[:, 0].float().mean(),
+                'initial_pred1': game_stats.initial_values[:, 0].mean(),
+                'mcts2': game_stats.root_values[:, 1].float().mean(),
+                'initial_pred2': game_stats.initial_values[:, 1].mean(),
+            }, self.generation)
 
-                self.summary_writer.add_scalars(f'{prefix}/root_values', {
-                    'mcts': game_stat.root_values[:, 0].float().mean(),
-                    'initial_pred': game_stat.initial_values[:, 0].mean(),
-                }, self.generation)
-
-                self.summary_writer.add_scalars(f'{prefix}/train_steps', {
-                    'min': game_stat.episode_len.min(),
-                    'max': game_stat.episode_len.max(),
-                    'mean': game_stat.episode_len.float().mean(),
-                    'median': game_stat.episode_len.float().median(),
-                }, self.generation)
+            self.summary_writer.add_scalars(f'{prefix}/train_steps', {
+                'min': game_stats.episode_len.min(),
+                'max': game_stats.episode_len.max(),
+                'mean': game_stats.episode_len.float().mean(),
+                'median': game_stats.episode_len.float().median(),
+            }, self.generation)
 
             episode_rewards = {}
             episode_rewards_mean = {}
-            for player_id, game_stat in game_stats.items():
-                rewards = game_stat.rewards.float().sum(1)
+            for player_id in self.game_ctl.hparams.player_ids:
+                player_index = game_stats.player_ids == player_id
+                rewards = game_stats.rewards[player_index].float()
+                if rewards.ndim == 2:
+                    rewards = rewards.sum(1)
+
                 episode_rewards[f'wins{player_id}'] = (rewards > 0).sum() / len(rewards)
                 episode_rewards[f'draws'] = (rewards == 0).sum() / len(rewards)
 

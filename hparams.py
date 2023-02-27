@@ -21,8 +21,8 @@ class GenericHparams:
     default_reward: float = 0.0
 
     value_discount: float = 1
-    #pb_c_init: float = 1.25
-    pb_c_init: float = 4
+    pb_c_init: float = 1.25
+    #pb_c_init: float = 4
     pb_c_base: float = 19652
     add_exploration_noise: bool = True
     dirichlet_alpha: float = 1.25
@@ -39,7 +39,7 @@ class GenericHparams:
     num_steps_to_argmax_action_selection: int
     action_selection_temperature: float = 1
 
-    max_training_games: int = 1024
+    max_training_games: int = 128
 
     server_port: int = 50051
     num_server_workers: int = 2
@@ -68,10 +68,10 @@ class ConnectXHparams(GenericHparams):
     state_shape: List[int] = [6, 7]
     num_actions: int = 7
 
-    max_episode_len: int = 21
+    max_episode_len: int = 42
     num_simulations: int = 800
 
-    num_steps_to_argmax_action_selection: int = 8
+    num_steps_to_argmax_action_selection: int = 25
     action_selection_temperature: float = 1
 
     num_unroll_steps: int = 5
