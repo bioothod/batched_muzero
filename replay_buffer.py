@@ -67,10 +67,10 @@ class ReplayBuffer:
 
         samples = set()
         num_iterations = 0
-        while len(samples) < batch_size and num_iterations < 1024:
+        while len(samples) < batch_size and num_iterations < 10:
             game_stat = random.choice(all_games)
-            random_index = random.sample(range(len(game_stat.episode_len)), 64)
-            game_stat = game_stat.index(random_index)
+            #random_index = random.sample(range(len(game_stat.episode_len)), 64)
+            #game_stat = game_stat.index(random_index)
 
 
             max_start_pos = game_stat.episode_len.max() - self.hparams.num_unroll_steps
