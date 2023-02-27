@@ -10,14 +10,15 @@ class NetworkParams:
     num_stacked_states: int
     num_additional_planes: int
     conv_res_num_features: int
+    flat_projection_num_features: int
 
     repr_features_dropout: float
     repr_conv_num_blocks: int
 
+    pred_conv_num_blocks: int
     pred_hidden_linear_layers: List[int]
     num_actions: int = 0
 
-    dyn_reward_dropout: float
     dyn_conv_num_blocks: int
     dyn_reward_linear_layers: List[int]
 
@@ -54,15 +55,15 @@ class ConnectXParams(NetworkParams):
     num_additional_planes: int = 7
     kernel_size: int = 4
     conv_res_num_features: int = 64
+    flat_projection_num_features: int = 8
 
-    repr_features_dropout: float = 0.
-    repr_conv_num_blocks: int = 8
+    repr_conv_num_blocks: int = 5
 
-    pred_hidden_linear_layers: List[int] = [512, 256]
+    pred_conv_num_blocks: int = 5
+    pred_hidden_linear_layers: List[int] = [128, 128]
     num_actions: int = 0
 
-    dyn_reward_dropout: float = 0.
-    dyn_conv_num_blocks: int = 8
+    dyn_conv_num_blocks: int = 5
     dyn_reward_linear_layers: List[int] = [128, 128]
 
     activation_str: str = 'ReLU'

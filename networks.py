@@ -43,14 +43,14 @@ class ResidualBlock(nn.Module):
         self.b1 = nn.BatchNorm2d(num_features)
 
     def forward(self, inputs):
-        x = self.b0(inputs)
-        x = self.conv0(x)
+        x = self.conv0(inputs)
+        x = self.b0(x)
         x = self.activation0(x)
 
-        x = self.b1(x)
         x = self.conv1(x)
-        x = self.activation1(x)
+        x = self.b1(x)
         x = x + inputs
+        x = self.activation1(x)
 
         return x
 
@@ -98,7 +98,11 @@ class Representation(nn.Module):
                 activation=hparams.activation)
             res_blocks.append(block)
 
-        self.conv_blocks = nn.Sequential(*res_blocks)
+        self.conv_blocks = nn.Sequential(
+            *res_blocks,
+            nn.LayerNorm([hparams.conv_res_num_features] + hparams.observation_shape),
+            nn.Tanh(),
+        )
 
     def forward(self, inputs):
         x = self.input_proj(inputs)
@@ -109,24 +113,46 @@ class Prediction(nn.Module):
     def __init__(self, hparams: NetworkParams) -> None:
         super().__init__()
 
-        self.input_proj = nn.Sequential(
+        res_blocks = []
+        for _ in range(hparams.pred_conv_num_blocks):
+            block = ResidualBlock(
+                num_features=hparams.conv_res_num_features,
+                kernel_size=hparams.kernel_size,
+                activation=hparams.activation)
+            res_blocks.append(block)
+
+        self.conv_blocks = nn.Sequential(*res_blocks)
+
+        num_input_features = hparams.flat_projection_num_features * np.prod(hparams.observation_shape)
+        self.output_policy_logits = nn.Sequential(
+            nn.Conv2d(hparams.conv_res_num_features, hparams.flat_projection_num_features, 1),
+            nn.BatchNorm2d(hparams.flat_projection_num_features),
+            hparams.activation(),
+
             nn.Flatten(),
+
+            LinearPrediction(num_input_features,
+                             hparams.pred_hidden_linear_layers,
+                             hparams.num_actions,
+                             hparams.activation,
+                             output_activation=None)
+        )
+        self.output_value = nn.Sequential(
+            nn.Conv2d(hparams.conv_res_num_features, hparams.flat_projection_num_features, 1, padding='same'),
+            nn.BatchNorm2d(hparams.flat_projection_num_features),
+            hparams.activation(),
+
+            nn.Flatten(),
+
+            LinearPrediction(num_input_features,
+                             hparams.pred_hidden_linear_layers,
+                             1,
+                             hparams.activation,
+                             output_activation=nn.Tanh)
         )
 
-        num_input_features = hparams.conv_res_num_features * np.prod(hparams.observation_shape)
-        self.output_policy_logits = LinearPrediction(num_input_features,
-                                                     hparams.pred_hidden_linear_layers,
-                                                     hparams.num_actions,
-                                                     hparams.activation,
-                                                     output_activation=None)
-        self.output_value = LinearPrediction(num_input_features,
-                                             hparams.pred_hidden_linear_layers,
-                                             1,
-                                             hparams.activation,
-                                             output_activation=None)
-
     def forward(self, inputs):
-        x = self.input_proj(inputs)
+        x = self.conv_blocks(inputs)
         p = self.output_policy_logits(x)
         v = self.output_value(x)
         return p, v
@@ -136,39 +162,50 @@ class Dynamic(nn.Module):
         super().__init__()
 
         num_input_features = hparams.conv_res_num_features + hparams.num_additional_planes
+        self.input_proj = nn.Sequential(
+            nn.Conv2d(num_input_features, hparams.conv_res_num_features, 3, padding='same'),
+            nn.BatchNorm2d(hparams.conv_res_num_features),
+            hparams.activation(),
+        )
 
         res_blocks = []
         for _ in range(hparams.repr_conv_num_blocks):
             block = ResidualBlock(
-                num_features=num_input_features,
+                num_features=hparams.conv_res_num_features,
                 kernel_size=hparams.kernel_size,
                 activation=hparams.activation)
             res_blocks.append(block)
 
         self.conv_blocks = nn.Sequential(*res_blocks)
 
-        self.output_proj = nn.Sequential(
-            nn.Conv2d(num_input_features, hparams.conv_res_num_features, 1, padding='same'),
-            nn.ReLU(inplace=True),
+        self.output_hidden_state = nn.Sequential(
+            nn.LayerNorm([hparams.conv_res_num_features] + hparams.observation_shape),
+            nn.Tanh(),
         )
 
-        num_input_features = hparams.conv_res_num_features * np.prod(hparams.observation_shape)
+
+        num_input_features = hparams.flat_projection_num_features * np.prod(hparams.observation_shape)
         self.output_reward = nn.Sequential(
+            nn.Conv2d(hparams.conv_res_num_features, hparams.flat_projection_num_features, 1, padding='same'),
+            nn.BatchNorm2d(hparams.flat_projection_num_features),
+            hparams.activation(),
+
             nn.Flatten(),
 
-            nn.Dropout(hparams.dyn_reward_dropout),
             LinearPrediction(num_input_features,
                              hparams.dyn_reward_linear_layers,
                              1,
                              hparams.activation,
-                             output_activation=None)
+                             output_activation=nn.Tanh)
             )
 
     def forward(self, inputs):
-        x = self.conv_blocks(inputs)
-        x = self.output_proj(x)
+        x = self.input_proj(inputs)
+        x = self.conv_blocks(x)
+
         reward = self.output_reward(x)
-        return x, reward
+        hidden_state = self.output_hidden_state(x)
+        return hidden_state, reward
 
 class GameState:
     def __init__(self, batch_size: int, hparams: GenericHparams, network_hparams: NetworkParams):
