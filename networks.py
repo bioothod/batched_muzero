@@ -28,29 +28,29 @@ class ResidualBlock(nn.Module):
     def __init__(self, num_features, kernel_size, activation):
         super().__init__()
 
+        self.activation = activation()
+
         self.conv0 = nn.Conv2d(num_features,
                                num_features,
                                kernel_size,
                                padding='same')
-        self.activation0 = activation()
         self.b0 = nn.BatchNorm2d(num_features)
 
         self.conv1 = nn.Conv2d(num_features,
                                num_features,
                                kernel_size,
                                padding='same')
-        self.activation1 = activation()
         self.b1 = nn.BatchNorm2d(num_features)
 
     def forward(self, inputs):
         x = self.conv0(inputs)
         x = self.b0(x)
-        x = self.activation0(x)
+        x = self.activation(x)
 
         x = self.conv1(x)
         x = self.b1(x)
         x = x + inputs
-        x = self.activation1(x)
+        x = self.activation(x)
 
         return x
 
@@ -86,7 +86,7 @@ class Representation(nn.Module):
         self.input_proj = nn.Sequential(
             nn.Conv2d(2*hparams.num_stacked_states,
                       hparams.conv_res_num_features,
-                      1,
+                      3,
                       padding='same'),
         )
 
@@ -242,17 +242,18 @@ class GameState:
         return new_state
 
     def push_game(self, player_id: torch.Tensor, game_state: torch.Tensor):
-        converted_game_state = torch.zeros_like(game_state)
+        # converted_game_state = torch.zeros_like(game_state)
 
-        pov_player_id = self.player_ids[0]
-        for local_player_id in self.player_ids:
-            index = player_id == local_player_id
+        # pov_player_id = self.player_ids[0]
+        # for local_player_id in self.player_ids:
+        #     index = player_id == local_player_id
 
-            if local_player_id == pov_player_id:
-                converted_game_state[index] = game_state[index]
-            else:
-                converted_game_state[index] = self.revert_state(pov_player_id, local_player_id, game_state[index])
+        #     if local_player_id == pov_player_id:
+        #         converted_game_state[index] = game_state[index]
+        #     else:
+        #         converted_game_state[index] = self.revert_state(pov_player_id, local_player_id, game_state[index])
 
+        converted_game_state = game_state.detach().clone()
         self.game_stack.append(converted_game_state)
         self.game_player_ids.append(player_id.detach().clone())
 
