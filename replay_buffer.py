@@ -5,6 +5,7 @@ import random
 from collections import defaultdict
 from copy import deepcopy
 
+import numpy as np
 import torch
 
 from hparams import GenericHparams
@@ -65,26 +66,19 @@ class ReplayBuffer:
         if len(all_games) == 0:
             all_games = self.flatten_games()
 
-        samples = set()
+        samples = []
         num_iterations = 0
         while len(samples) < batch_size and num_iterations < 10:
             game_stat = random.choice(all_games)
-            #random_index = random.sample(range(len(game_stat.episode_len)), 64)
-            #game_stat = game_stat.index(random_index)
 
-
-            max_start_pos = game_stat.episode_len.max() - self.hparams.num_unroll_steps
-            if max_start_pos > 0:
-                start_pos = torch.randint(low=0, high=max_start_pos, size=(len(game_stat.episode_len),)).to(self.hparams.device)
-            else:
-                start_pos = torch.zeros_like(game_stat.episode_len)
-
-            start_pos = torch.where(start_pos+self.hparams.num_unroll_steps>=game_stat.episode_len, 0, game_stat.episode_len-self.hparams.num_unroll_steps-1)
-            start_pos = torch.maximum(start_pos, torch.zeros_like(start_pos))
+            random_init = np.random.randint(0, 2, size=len(game_stat.episode_len))
+            high = np.maximum(random_init, game_stat.episode_len.cpu().numpy()-self.hparams.num_unroll_steps)
+            start_pos = np.random.randint(0, high, len(game_stat.episode_len))
+            start_pos = torch.from_numpy(start_pos).to(self.hparams.device)
 
             elms = game_stat.make_target(start_pos)
-            #samples += elms
-            samples.update(elms)
+            samples += elms
+            #samples.update(elms)
             num_iterations += 1
 
         return list(samples)
