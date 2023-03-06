@@ -31,11 +31,12 @@ class TrainElement:
 
     def __hash__(self) -> int:
         state_data = self.initial_game_state.detach().cpu().numpy().tostring()
+        children_visits_data = self.children_visits.detach().cpu().numpy().tostring()
         action_data = self.actions.detach().cpu().numpy().tostring()
         start_index_data = self.start_index.detach().cpu().numpy().tostring()
         sample_len_data = self.sample_len.detach().cpu().numpy().tostring()
         player_ids_data = self.player_ids.detach().cpu().numpy().tostring()
-        return hash((state_data, action_data, start_index_data, sample_len_data, player_ids_data))
+        return hash((state_data, children_visits_data, action_data, start_index_data, sample_len_data, player_ids_data))
 
     def __eq__(self, other: 'TrainElement') -> bool:
         return torch.all(self.initial_game_state == other.initial_game_state) and torch.all(self.values == other.values) and torch.all(self.actions == other.actions)
@@ -51,7 +52,7 @@ class TrainElement:
         self.player_ids = self.player_ids.to(device)
         return self
 
-def roll_by_gather(mat, dim, shifts: torch.LongTensor):
+def roll_by_gather(mat, dim, shifts: torch.LongTensor) -> torch.Tensor:
     # assumes 2D array
     n_rows, n_cols = mat.shape
 
@@ -183,7 +184,7 @@ class GameStats:
 
         start_player_ids = self.player_ids.gather(1, start_index.unsqueeze(1))
 
-        for unroll_step in range(0, self.hparams.num_unroll_steps+1):
+        for unroll_step in range(0, self.hparams.num_unroll_steps + 1):
             start_unroll_index = start_index + unroll_step
             bootstrap_index = start_unroll_index + td_steps
             bootstrap_update_index = bootstrap_index < self.episode_len
@@ -209,15 +210,15 @@ class GameStats:
             rewards = torch.where(all_rewards_index >= bootstrap_index.unsqueeze(1), 0, rewards)
 
             discount = roll_by_gather(discount_mult, 1, start_unroll_index.unsqueeze(1))
-            discounted_rewards = rewards * discount
+            rewards = roll_by_gather(rewards, 1, start_unroll_index.unsqueeze(1))
 
             rolled_player_ids = roll_by_gather(self.player_ids, 1, start_unroll_index.unsqueeze(1))
             node_multiplier = torch.where(rolled_player_ids == start_player_ids, 1, -1)
-            values += torch.sum(discounted_rewards * node_multiplier, 1)
+            values += torch.sum(rewards * discount * node_multiplier, 1)
 
             batch_index = torch.arange(len(start_index), device=start_index.device)
-            target_values[batch_index, unroll_step] = (values + self.root_values[batch_index, start_unroll_index]) / 2
-            #target_values[:, unroll_step] = values
+            #target_values[batch_index, unroll_step] = (values + self.root_values[batch_index, start_unroll_index]) / 2
+            target_values[batch_index, unroll_step] = values
 
             target_children_visits[batch_index, :, unroll_step] = self.children_visits[batch_index, :, start_unroll_index].float()
             player_ids[batch_index, unroll_step] = self.player_ids[batch_index, start_unroll_index].long()
@@ -285,8 +286,9 @@ class Simulation:
 
         tree.store_states(search_path, episode_len, out.hidden_state)
 
-        tree.expand(node_index, out.policy_logits)
-        tree.backpropagate(initial_player_id, initial_player_id.unsqueeze(1), search_path, episode_len-1, out.value)
+        valid_policy_logits = out.policy_logits * invalid_actions_mask
+        tree.expand(initial_player_id, node_index, valid_policy_logits, torch.zeros_like(out.value))
+        tree.backpropagate(initial_player_id, search_path, episode_len-1, out.value)
 
         children_index = tree.children_index(batch_index, node_index)
 
@@ -369,7 +371,7 @@ class Simulation:
         player_ids = torch.ones(hparams.batch_size, device=hparams.device, dtype=torch.int64) * hparams.player_ids[0]
 
         active_games_index = torch.arange(hparams.batch_size).long().to(hparams.device)
-        game_state_stacks = {player_id:GameState(hparams.batch_size, hparams, self.game_ctl.network_hparams) for player_id in hparams.player_ids}
+        game_state_stacks = GameState(hparams.batch_size, hparams, self.game_ctl.network_hparams)
 
         for step in itertools.count():
             active_player_ids = player_ids[active_games_index].detach().clone()
@@ -382,10 +384,11 @@ class Simulation:
             if torch.any(player_id != player_ids):
                 raise ValueError(f'pushing non-consistent player_ids: player_id: {player_id}, not_equal: {(player_id != player_ids).sum()}/{len(player_ids)}')
 
-            game_state_stacks[player_id].push_game(player_ids, game_states)
-            game_state_stack_converted = game_state_stacks[player_id].create_state()
+            game_state_stacks.push_game(player_ids, game_states)
+            game_state_stack_converted = game_state_stacks.create_state()
 
-            debug = (step == 0) or (step == 2) or (step == 8)
+            #debug = (step == 0) or (step == 2) or (step == 8)
+            debug = False
             if debug:
                 self.summary_prefix = f'{self.summary_prefix_orig}_{step}'
             actions, children_visits, root_values, debug_info = self.run_simulations(active_player_ids, game_state_stack_converted[active_games_index], invalid_actions_mask, debug)
@@ -407,16 +410,6 @@ class Simulation:
                 # needs to save the whole tensor of batch_size size, because we use a list of those, not copying them into a single tensor like other fields here
                 'game_states': game_state_stack_converted,
             })
-
-            # other_player_id = mcts.player_id_change(hparams, torch.tensor(player_id)).item()
-
-            # win_index = active_games_index[torch.logical_and((dones == True), (rewards > 0))]
-            # other_rewards = torch.ones_like(win_index).float() * -1
-            # game_stats.update_last_reward_and_values(win_index, other_rewards)
-
-            # lose_index = active_games_index[torch.logical_and((dones == True), (rewards < 0))]
-            # other_rewards = torch.ones_like(lose_index).float() * 1
-            # game_stats.update_last_reward_and_values(lose_index, other_rewards)
 
             # max_debug = 10
             # train.logger.info(f'game:\n{game_states[0].detach().cpu().numpy().astype(int)}\n'
