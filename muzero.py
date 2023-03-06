@@ -76,7 +76,7 @@ class Trainer:
 
         self.inference = networks.Inference(self.game_ctl, logger)
 
-        self.opt = torch.optim.Adam(self.inference.parameters(), lr=self.hparams.init_lr)
+        self.opt = torch.optim.AdamW(self.inference.parameters(), lr=self.hparams.init_lr)
 
         self.ce_loss = nn.CrossEntropyLoss(reduction='none')
         self.scalar_loss = nn.MSELoss(reduction='none')
@@ -91,9 +91,7 @@ class Trainer:
 
     def save_muzero_server_weights(self):
         save_dict = {
-            'representation_state_dict': self.inference.representation.state_dict(),
-            'prediction_state_dict': self.inference.prediction.state_dict(),
-            'dynamic_state_dict': self.inference.dynamic.state_dict(),
+            'state_dict': self.inference.state_dict(),
         }
         meta = pickle.dumps(save_dict)
 
@@ -146,16 +144,18 @@ class Trainer:
         reward_loss_mean = 0
 
         self.summary_writer.add_scalars('train/initial_losses', {
-                'policy': policy_loss_mean,
-                'value': value_loss_mean,
-                'total': total_loss_mean,
+            'policy': policy_loss_mean,
+            'value': value_loss_mean,
+            'total': total_loss_mean,
         }, self.global_step)
 
+        initial_player_ids = {}
         for player_id in self.hparams.player_ids:
             player_idx = sample.player_ids[:, 0] == player_id
+            initial_player_ids[f'{player_id}'] = player_idx.sum()
 
             if player_idx.sum() > 0:
-                pred_values = out.value[player_idx].detach().cpu().numpy()
+                pred_values = out.value[player_idx].squeeze(1).detach().cpu().numpy()
                 true_values = sample.values[player_idx, 0].detach().cpu().numpy()
                 value_loss_local = value_loss[player_idx]
 
@@ -164,6 +164,8 @@ class Trainer:
                     f'true_target': true_values.mean(),
                     f'loss': value_loss_local.mean(),
                 }, self.global_step)
+
+        self.summary_writer.add_scalars(f'train/initial_player_ids', initial_player_ids, self.global_step)
 
         batch_index = torch.arange(len(sample))
         for step_idx in range(1, sample_len_max):
@@ -243,9 +245,7 @@ class Trainer:
             sample_start = torch.cat(sample_start, 0)
             sample_len = torch.cat(sample_len, 0)
 
-            # nn.utils.clip_grad_norm_(self.inference.representation.parameters(), 1)
-            # nn.utils.clip_grad_norm_(self.inference.prediction.parameters(), 1)
-            # nn.utils.clip_grad_norm_(self.inference.dynamic.parameters(), 1)
+            nn.utils.clip_grad_norm_(self.inference.parameters(), 1)
 
             self.opt.step()
 
@@ -311,18 +311,13 @@ class Trainer:
                 total_loss = self.training_step(sample)
                 total_loss.backward()
 
-                # do not hold gpu memory
-                sample.to('cpu')
-
                 total_losses.append(total_loss.item())
 
             total_loss_mean = sum(total_losses) / len(total_losses)
             sample_start = torch.cat(sample_start, 0)
             sample_len = torch.cat(sample_len, 0)
 
-            nn.utils.clip_grad_norm_(self.inference.representation.parameters(), self.hparams.max_gradient_norm)
-            nn.utils.clip_grad_norm_(self.inference.prediction.parameters(), self.hparams.max_gradient_norm)
-            nn.utils.clip_grad_norm_(self.inference.dynamic.parameters(), self.hparams.max_gradient_norm)
+            nn.utils.clip_grad_norm_(self.inference.parameters(), self.hparams.max_gradient_norm)
 
             self.opt.step()
 
@@ -403,16 +398,18 @@ class Trainer:
         }, self.global_step)
 
         if try_saving and (total_best_score >= self.max_best_score):
+            prev_best_score = self.max_best_score
             self.max_best_score = total_best_score
             checkpoint_path = os.path.join(self.hparams.checkpoints_dir, f'muzero_best_{total_best_score:.1f}.ckpt')
             self.save(checkpoint_path)
-            self.logger.info(f'stored checkpoint: generation: {self.global_step}, best_score: {total_best_score:.1f}, checkpoint: {checkpoint_path}')
+            self.logger.info(f'stored checkpoint: generation: {self.global_step}, best_score: {prev_best_score:.1f} -> {self.max_best_score:.1f}, checkpoint: {checkpoint_path}')
 
         if try_saving and (total_good_score >= self.max_good_score):
+            prev_good_score = self.max_good_score
             self.max_good_score = total_good_score
             checkpoint_path = os.path.join(self.hparams.checkpoints_dir, f'muzero_good_{total_good_score:.1f}.ckpt')
             self.save(checkpoint_path)
-            self.logger.info(f'stored checkpoint: generation: {self.global_step}, good_score: {total_good_score:.1f}, checkpoint: {checkpoint_path}')
+            self.logger.info(f'stored checkpoint: generation: {self.global_step}, good_score: {prev_good_score:.1f} -> {self.max_good_score:.1f}, checkpoint: {checkpoint_path}')
 
 
     def save(self, checkpoint_path):
