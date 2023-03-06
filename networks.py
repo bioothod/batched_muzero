@@ -100,8 +100,6 @@ class Representation(nn.Module):
 
         self.conv_blocks = nn.Sequential(
             *res_blocks,
-            nn.LayerNorm([hparams.conv_res_num_features] + hparams.observation_shape),
-            nn.Tanh(),
         )
 
     def forward(self, inputs):
@@ -148,7 +146,7 @@ class Prediction(nn.Module):
                              hparams.pred_hidden_linear_layers,
                              1,
                              hparams.activation,
-                             output_activation=nn.Tanh)
+                             output_activation=None)
         )
 
     def forward(self, inputs):
@@ -163,7 +161,7 @@ class Dynamic(nn.Module):
 
         num_input_features = hparams.conv_res_num_features + hparams.num_additional_planes
         self.input_proj = nn.Sequential(
-            nn.Conv2d(num_input_features, hparams.conv_res_num_features, 3, padding='same'),
+            nn.Conv2d(num_input_features, hparams.conv_res_num_features, hparams.kernel_size, padding='same'),
             nn.BatchNorm2d(hparams.conv_res_num_features),
             hparams.activation(),
         )
@@ -178,12 +176,6 @@ class Dynamic(nn.Module):
 
         self.conv_blocks = nn.Sequential(*res_blocks)
 
-        self.output_hidden_state = nn.Sequential(
-            nn.LayerNorm([hparams.conv_res_num_features] + hparams.observation_shape),
-            nn.Tanh(),
-        )
-
-
         num_input_features = hparams.flat_projection_num_features * np.prod(hparams.observation_shape)
         self.output_reward = nn.Sequential(
             nn.Conv2d(hparams.conv_res_num_features, hparams.flat_projection_num_features, 1, padding='same'),
@@ -196,7 +188,7 @@ class Dynamic(nn.Module):
                              hparams.dyn_reward_linear_layers,
                              1,
                              hparams.activation,
-                             output_activation=nn.Tanh)
+                             output_activation=None)
             )
 
     def forward(self, inputs):
@@ -204,8 +196,7 @@ class Dynamic(nn.Module):
         x = self.conv_blocks(x)
 
         reward = self.output_reward(x)
-        hidden_state = self.output_hidden_state(x)
-        return hidden_state, reward
+        return x, reward
 
 class GameState:
     def __init__(self, batch_size: int, hparams: GenericHparams, network_hparams: NetworkParams):
@@ -218,8 +209,8 @@ class GameState:
         self.num_additional_planes = network_hparams.num_additional_planes
         self.num_hidden_state_raw_planes = len(self.player_ids) * self.num_games
 
-        self.game_stack = deque()
-        self.game_player_ids = deque()
+        self.game_stack = deque(maxlen=network_hparams.num_stacked_states)
+        self.game_player_ids = deque(maxlen=network_hparams.num_stacked_states)
         self.reset()
 
     def to(self, device) -> 'GameState':
@@ -257,9 +248,6 @@ class GameState:
         self.game_stack.append(converted_game_state)
         self.game_player_ids.append(player_id.detach().clone())
 
-        self.game_stack.popleft()
-        self.game_player_ids.popleft()
-
     def reset(self):
         self.game_stack.clear()
         self.game_player_ids.clear()
@@ -272,22 +260,13 @@ class GameState:
     def create_state(self):
         states = torch.zeros(self.num_games*len(self.player_ids), self.batch_size, *self.state_shape).to(self.device)
 
-        # states design:
-        # for a number of stacked games:
-        #  2*i+0: set 1 where current player has its marks
-        #  2*i+1: set 1 where the other player has its marks
-        # additional encoded action planes
-
-        def get_index_for_player_id(game_state, player_id):
-            index = game_state == player_id
-            index = index.squeeze(1)
-            return index
-
-        for game_idx, game_state in enumerate(self.game_stack):
+        for game_idx, (game_player_id, game_state) in enumerate(zip(self.game_player_ids, self.game_stack)):
             offset = game_idx * len(self.player_ids)
 
             for local_idx, local_player_id in enumerate(self.player_ids):
-                states[offset+local_idx, get_index_for_player_id(game_state, local_player_id)] = 1
+                state_player_idx = game_state == local_player_id
+                state_player_idx = state_player_idx.squeeze(1)
+                states[offset + local_idx, state_player_idx] = 1
 
         states = torch.transpose(states, 1, 0)
         return states

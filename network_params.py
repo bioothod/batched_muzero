@@ -57,20 +57,20 @@ class ConnectXParams(NetworkParams):
     conv_res_num_features: int = 64
     flat_projection_num_features: int = 8
 
-    repr_conv_num_blocks: int = 5
+    repr_conv_num_blocks: int = 16
 
-    pred_conv_num_blocks: int = 5
+    pred_conv_num_blocks: int = 16
     pred_hidden_linear_layers: List[int] = [128, 128]
     num_actions: int = 0
 
-    dyn_conv_num_blocks: int = 5
+    dyn_conv_num_blocks: int = 16
     dyn_reward_linear_layers: List[int] = [128, 128]
 
-    activation_str: str = 'ReLU'
-    #activation_str: str = 'LeakyReLU'
+    #activation_str: str = 'ReLU'
+    activation_str: str = 'LeakyReLU'
     activation_args: List = []
-    #activation_kwargs: Dict = {'negative_slope': 0.01, 'inplace': True}
-    activation_kwargs: Dict = {'inplace': True}
+    activation_kwargs: Dict = {'negative_slope': 0.01, 'inplace': True}
+    #activation_kwargs: Dict = {'inplace': True}
 
 class TicTacToeParams(NetworkParams):
     kernel_size: int = 3
