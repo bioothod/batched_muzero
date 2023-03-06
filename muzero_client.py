@@ -98,9 +98,8 @@ class MuzeroCollectionClient:
                 value.to(device)
             return state_dict
 
-        self.inference.representation.load_state_dict(convert(checkpoint['representation_state_dict'], self.game_ctl.hparams.device))
-        self.inference.prediction.load_state_dict(convert(checkpoint['prediction_state_dict'], self.game_ctl.hparams.device))
-        self.inference.dynamic.load_state_dict(convert(checkpoint['dynamic_state_dict'], self.game_ctl.hparams.device))
+        self.inference.load_state_dict(checkpoint['state_dict'])
+        self.inference.to(self.game_ctl.hparams.device)
 
     def send_game_stats(self, game_stats: simulation.GameStats, collection_time: float):
         meta = pickle.dumps([game_stats.to('cpu')])
@@ -148,32 +147,35 @@ class MuzeroCollectionClient:
                     self.summary_writer.add_scalars(f'{prefix}/children_visits{i}', children_visits, self.generation)
                     #self.summary_writer.add_scalars(f'{prefix}/pred_policy_probs{i}', initial_policy_probs, self.generation)
 
-            self.summary_writer.add_scalars(f'{prefix}/root_values', {
-                'mcts1': game_stats.root_values[:, 0].float().mean(),
-                'initial_pred1': game_stats.initial_values[:, 0].mean(),
-                'mcts2': game_stats.root_values[:, 1].float().mean(),
-                'initial_pred2': game_stats.initial_values[:, 1].mean(),
-            }, self.generation)
+            root_values = {}
+            for i in range(3):
+                root_values[f'mcts{i}'] = game_stats.root_values[:, i].float().mean()
+                root_values[f'initial_pred{i}'] = game_stats.initial_values[:, i].float().mean()
+            self.summary_writer.add_scalars(f'{prefix}/root_values', root_values, self.generation)
 
             self.summary_writer.add_scalars(f'{prefix}/train_steps', {
                 'min': game_stats.episode_len.min(),
                 'max': game_stats.episode_len.max(),
                 'mean': game_stats.episode_len.float().mean(),
                 'median': game_stats.episode_len.float().median(),
+                'max_reward_step_mean': torch.argmax(game_stats.rewards, 1).float().mean(0)
             }, self.generation)
 
+
+            episode_index = (game_stats.episode_len - 1).unsqueeze(1)
+            win_player_id = game_stats.player_ids.gather(1, episode_index).squeeze(1)
+            win_rewards = game_stats.rewards.gather(1, episode_index).squeeze(1)
             episode_rewards = {}
             episode_rewards_mean = {}
             for player_id in self.game_ctl.hparams.player_ids:
-                player_index = game_stats.player_ids == player_id
-                rewards = game_stats.rewards[player_index].float()
-                if rewards.ndim == 2:
-                    rewards = rewards.sum(1)
+                player_index = win_player_id == player_id
+                rewards = win_rewards[player_index]
+                wins = (rewards > 0).sum()
 
-                episode_rewards[f'wins{player_id}'] = (rewards > 0).sum() / len(rewards)
-                episode_rewards[f'draws'] = (rewards == 0).sum() / len(rewards)
+                episode_rewards[f'wins{player_id}'] = wins / len(win_rewards)
+                episode_rewards_mean[f'{player_id}'] = rewards.sum() / len(win_rewards)
 
-                episode_rewards_mean[f'{player_id}'] = rewards.mean()
+            episode_rewards[f'draws'] = (win_rewards == 0).sum() / len(win_rewards)
 
             self.summary_writer.add_scalars(f'{self.client_id}/results', episode_rewards, self.generation)
             self.summary_writer.add_scalars(f'{self.client_id}/mean_reward', episode_rewards_mean, self.generation)
