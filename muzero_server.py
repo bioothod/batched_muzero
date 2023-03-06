@@ -1,10 +1,11 @@
-from collections import defaultdict
 from concurrent import futures
 from typing import List, Dict
 
 import grpc
 import logging
 import pickle
+
+from copy import deepcopy
 
 import muzero_pb2
 import muzero_pb2_grpc
@@ -26,7 +27,7 @@ class MuzeroServer(muzero_pb2_grpc.MuzeroServicer):
 
     def update_weights(self, generation: int, weights: bytes):
         self.generation = generation
-        self.latest_serialized_weights = weights
+        self.latest_serialized_weights = deepcopy(weights)
 
     def WeightUpdateRequest(self, request, context) -> muzero_pb2.WeightResponse:
         self.logger.debug(f'server: weights update request: generation: r{request.generation}, s{self.generation}')
