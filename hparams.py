@@ -25,8 +25,8 @@ class GenericHparams:
     #pb_c_init: float = 4
     pb_c_base: float = 19652
     add_exploration_noise: bool = True
-    dirichlet_alpha: float = 1.25
-    #dirichlet_alpha: float = 0.3
+    #dirichlet_alpha: float = 1.25
+    dirichlet_alpha: float = 0.25
     exploration_fraction: float = 0.25
 
     player_ids: List[int] = [1, 2]
@@ -39,7 +39,7 @@ class GenericHparams:
     num_steps_to_argmax_action_selection: int
     action_selection_temperature: float = 1
 
-    max_training_games: int = 128
+    max_training_games: int = 100
 
     server_port: int = 50051
     num_server_workers: int = 2
