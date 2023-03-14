@@ -275,6 +275,8 @@ class Simulation:
 
         tree = mcts.Tree(self.hparams, initial_player_id, self.inference, self.logger)
 
+        self.inference.train(False)
+
         batch_size = len(initial_player_id)
         batch_index = torch.arange(batch_size).long().to(self.hparams.device)
         node_index = torch.zeros(batch_size, 1).long().to(self.hparams.device)
