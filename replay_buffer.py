@@ -1,4 +1,4 @@
-from typing import List, Dict, NamedTuple
+from typing import List, Dict, NamedTuple, Optional
 
 import random
 
@@ -54,11 +54,12 @@ class ReplayBuffer:
     def num_games(self) -> int:
         return len(self.flatten_games())
 
-    def flatten_games(self) -> List[GameStats]:
+    def flatten_games(self, min_key: int = 0) -> List[GameStats]:
         all_keys = sorted(list(self.games.keys()))
         all_games = []
         for key in all_keys:
-            all_games += self.games[key]
+            if key >= min_key:
+                all_games += self.games[key]
 
         return all_games
 
