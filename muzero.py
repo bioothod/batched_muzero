@@ -48,7 +48,7 @@ def train_element_collate_fn(samples: List[simulation.TrainElement]):
 
     return simulation.TrainElement(**converted_dict)
 
-def action_selection_fn(children_visit_counts: torch.Tensor, episode_len: torch.Tensor):
+def action_selection_fn_argmax(children_visit_counts: torch.Tensor, episode_len: torch.Tensor):
     actions = torch.argmax(children_visit_counts, 1)
     return actions
 
@@ -90,8 +90,12 @@ class Trainer:
         self.start_training = time.time()
 
     def save_muzero_server_weights(self):
+        state = {}
+        for key, value in self.inference.state_dict().items():
+            state[key] = deepcopy(value.detach().cpu().clone().numpy())
+
         save_dict = {
-            'state_dict': self.inference.state_dict(),
+            'state_dict': state,
         }
         meta = pickle.dumps(save_dict)
 
@@ -206,19 +210,23 @@ class Trainer:
 
         return total_loss_mean
 
-    def run_training_online(self):
-        self.replay_buffer.truncate(max_generation=self.global_step)
-        while self.replay_buffer.num_games() < 10:
-            self.replay_buffer.truncate(max_generation=self.global_step)
+    def run_training_onpolicy(self):
+        training_step = self.global_step
+
+        self.replay_buffer.truncate(max_generation=training_step)
+        while self.replay_buffer.num_games() < 1:
+            self.replay_buffer.truncate(max_generation=training_step)
+            all_games = self.replay_buffer.flatten_games(training_step)
+            if len(all_games) > 0:
+                break
 
             time.sleep(1)
 
-        self.inference.train(True)
 
-        all_games = self.replay_buffer.flatten_games()
-
-        for _ in range(self.hparams.num_training_steps):
+        for training_step_id in range(1, self.hparams.num_training_steps+1):
             start_time = perf_counter()
+
+            self.inference.train(True)
 
             # do not need to call optimizers zero_grad() because we are settig grads to zero in every model
             self.inference.zero_grad()
@@ -229,6 +237,8 @@ class Trainer:
             sample_len = []
             for _ in range(self.hparams.num_gradient_accumulation_steps):
                 with torch.no_grad():
+                    all_games = self.replay_buffer.flatten_games(training_step)
+
                     sample = self.replay_buffer.sample(batch_size=self.hparams.batch_size, all_games=all_games)[:self.hparams.batch_size]
                     sample = train_element_collate_fn(sample)
                     sample = sample.to(self.hparams.device)
@@ -236,12 +246,12 @@ class Trainer:
                     sample_start.append(sample.start_index)
                     sample_len.append(sample.sample_len)
 
-                total_loss = self.training_step(sample)
+                total_loss = self.training_step(sample) / self.hparams.num_gradient_accumulation_steps
                 total_loss.backward()
 
                 total_losses.append(total_loss.item())
 
-            total_loss_mean = sum(total_losses) / len(total_losses)
+            total_loss_mean = sum(total_losses)
             sample_start = torch.cat(sample_start, 0)
             sample_len = torch.cat(sample_len, 0)
 
@@ -274,18 +284,22 @@ class Trainer:
             self.summary_writer.add_scalar('train/games_received', self.replay_buffer.num_games_received, self.global_step)
 
             self.global_step += 1
-            self.save_muzero_server_weights()
 
+            if training_step_id % 20 == 0:
+                self.run_evaluation(try_saving=True)
+
+        self.save_muzero_server_weights()
         self.run_evaluation(try_saving=True)
 
-    def run_training_offline(self):
+    def run_training_offpolicy(self):
         while self.replay_buffer.num_games() == 0:
             time.sleep(1)
 
-        self.inference.train(True)
 
         for _ in range(self.hparams.num_training_steps):
             start_time = perf_counter()
+
+            self.inference.train(True)
 
             # do not need to call optimizers zero_grad() because we are settig grads to zero in every model
             self.inference.zero_grad()
@@ -368,7 +382,7 @@ class Trainer:
         hparams = deepcopy(self.hparams)
         hparams.batch_size = len(self.eval_ds.game_states)
 
-        sim = simulation.Simulation(self.game_ctl, self.inference, action_selection_fn, self.logger, self.summary_writer, 'eval', self.global_step)
+        sim = simulation.Simulation(self.game_ctl, self.inference, action_selection_fn_argmax, self.logger, self.summary_writer, 'eval', self.global_step)
         game_state_stack = networks.GameState(hparams.batch_size, hparams, self.game_ctl.network_hparams)
 
         active_game_states = self.eval_ds.game_states
@@ -455,7 +469,7 @@ def main():
     parser.add_argument('--load_latest', action='store_true', default=False, help='Whether to load the latest checkpoint instead of the best metrics')
     parser.add_argument('--save_best_after_seconds', type=int, default=0, help='Start saving best checkpoints only after this number of seconds has passed after the start')
     parser.add_argument('--save_best_after_training_steps', type=int, default=0, help='Start saving best checkpoints only after this number of training steps has passed')
-    parser.add_argument('--online', action='store_true', help='Run online training, i.e. waiting for number of episodes made with the latest model and then training with them')
+    parser.add_argument('--onpolicy', action='store_true', help='Run on-policy training, i.e. waiting for number of episodes made with the latest model and then training with them')
     FLAGS = parser.parse_args()
 
     #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
@@ -485,14 +499,14 @@ def main():
         eval_ds = None
 
     trainer = Trainer(module, logger, eval_ds)
-    if FLAGS.online:
+    if FLAGS.onpolicy:
         trainer.replay_buffer.max_num_games = trainer.hparams.max_training_games
 
     while True:
-        if FLAGS.online:
-            trainer.run_training_online()
+        if FLAGS.onpolicy:
+            trainer.run_training_onpolicy()
         else:
-            trainer.run_training_offline()
+            trainer.run_training_offpolicy()
 
 if __name__ == '__main__':
     main()
