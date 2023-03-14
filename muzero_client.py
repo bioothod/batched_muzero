@@ -9,6 +9,7 @@ import os
 import pickle
 import time
 
+import numpy as np
 import torch
 import torch.multiprocessing as mp
 from torch.utils.tensorboard import SummaryWriter
@@ -84,22 +85,31 @@ class MuzeroCollectionClient:
             generation=self.generation,
         ))
 
-        self.logger.info(f'received weight update: generation: {self.generation} -> {resp.generation}, weights: {len(resp.weights)}')
-
         if len(resp.weights) > 0:
-            self.load_weights(resp.weights)
+            tensors_loaded, num_params = self.load_weights(resp.weights)
+
+            self.logger.info(f'received weight update: generation: {self.generation} -> {resp.generation}, '
+                             f'weights: {len(resp.weights)}, '
+                             f'tensors_loaded: {tensors_loaded}, '
+                             f'num_params: {num_params/1_000_000:.3f}m')
+
             self.generation = resp.generation
 
     def load_weights(self, weights):
-        checkpoint = mapped_loads(weights, map_location=self.game_ctl.hparams.device)
+        full_state = pickle.loads(weights)
+        state = full_state['state_dict']
 
-        def convert(state_dict, device):
-            for value in state_dict.values():
-                value.to(device)
-            return state_dict
+        tensors_loaded = 0
+        num_params = 0
+        for key, value in self.inference.state_dict().items():
+            src = state[key]
+            src = torch.from_numpy(src).to(self.game_ctl.hparams.device)
+            value.copy_(src)
+            tensors_loaded += 1
+            num_params += np.prod(src.shape)
 
-        self.inference.load_state_dict(checkpoint['state_dict'])
         self.inference.to(self.game_ctl.hparams.device)
+        return tensors_loaded, num_params
 
     def send_game_stats(self, game_stats: simulation.GameStats, collection_time: float):
         meta = pickle.dumps([game_stats.to('cpu')])
